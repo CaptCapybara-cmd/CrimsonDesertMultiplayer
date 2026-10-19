@@ -28,6 +28,8 @@
 #include "mod/net/native_suppress.h"
 #include "common/keys.h"
 #include "mod/net/piece4_test.h"
+#include "mod/net/stage_force_test.h"
+#include "mod/net/stage_replay.h"
 #include "mod/net/player_hits.h"
 #include "mod/net/remote_puppet.h"
 #include "mod/net/troc_sniffer.h"
@@ -483,6 +485,8 @@ void capture_observe_s2c(const uint8_t* packet, size_t size) {
     hits_observe_s2c(packet, size);
     guest_hits_observe_s2c(packet, size);
     piece4_observe_s2c(packet, size);
+    stage_test_observe_s2c(packet, size);
+    stage_replay_observe_s2c(packet, size);
     puppet_observe_s2c(packet, size);
     uint16_t op = 0;
     if (size >= 5) std::memcpy(&op, packet, 2);
@@ -684,6 +688,8 @@ void capture_observe_c2s(const uint8_t* packet, size_t size) {
     guest_hits_observe_c2s(packet, size);
     loot_observe_c2s(packet, size);
     piece4_observe_c2s(packet, size);
+    stage_test_observe_c2s(packet, size);
+    stage_replay_observe_c2s(packet, size);
     attack_probe_observe_c2s(packet, size);
     if (size < 5 + 4) return;
     uint16_t op = 0;

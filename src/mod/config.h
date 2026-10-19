@@ -47,6 +47,18 @@ struct Config {
     bool dev_enemy_relay = false;
     // Ctrl+F10 / Ctrl+F11 experiments of piece 4 (piece4_test.h); they write to the game.
     bool dev_piece4_test = false;
+    // StageChartForceBranchDevReq test (stage_force_test.h); it writes to the game.
+    bool dev_stage_force_test = false;
+    uint16_t dev_stage_force_opcode = 2436;
+    // Unattended tests (test_input.h): press a key in the game window until the world loads,
+    // and close the game once the stage test is done.
+    bool dev_test_autoload = false;
+    uint16_t dev_test_autoload_key = 0x45;  // 'E', the game's confirm key on the title and menus
+    bool dev_test_autoquit = false;
+    // Record the game's own stage branches / replay them by static key (stage_replay.h); replay writes to the game.
+    bool dev_stage_record = false;
+    bool dev_stage_replay = false;
+    uint32_t dev_stage_record_stay_s = 240;
     // Every 2 s, log who sits in the attacker lists of our player and of the
     // other player's copy (attack_probe.h). Read only.
     bool dev_attack_probe = false;

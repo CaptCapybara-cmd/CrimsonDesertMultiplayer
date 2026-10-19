@@ -28,6 +28,9 @@
 #include "mod/net/learnt_store.h"
 #include "mod/net/native_suppress.h"
 #include "mod/net/piece4_test.h"
+#include "mod/net/stage_force_test.h"
+#include "mod/net/stage_replay.h"
+#include "mod/test_input.h"
 #include "mod/net/player_hits.h"
 #include "mod/net/puppet_minimap.h"
 #include "mod/net/remote_puppet.h"
@@ -440,6 +443,11 @@ struct LateInit {
     bool enemies_target_copy;
     bool enemy_relay;
     bool piece4_test;
+    bool stage_force_test;
+    uint16_t stage_force_opcode;
+    bool test_autoquit;
+    bool stage_record, stage_replay;
+    uint32_t stage_record_stay_s;
     bool guest_hits, guest_hit_stagger, player_hit_react, player_hit_lethal;
     bool attack_probe;
     int copy_attack_slots;
@@ -665,6 +673,25 @@ DWORD WINAPI late_init(LPVOID param) {
             CloseHandle(CreateThread(
                 nullptr, 0, [](LPVOID) -> DWORD { net::piece4_test_loop(g_stop); return 0; }, nullptr, 0, nullptr));
         }
+        if (init->stage_record || init->stage_replay) {
+            static LateInit copy = *init;
+            CloseHandle(CreateThread(
+                nullptr, 0,
+                [](LPVOID) -> DWORD {
+                    net::stage_replay_loop(g_stop, copy.dir, copy.stage_record, copy.stage_replay,
+                                           copy.stage_record_stay_s, copy.test_autoquit);
+                    return 0;
+                },
+                nullptr, 0, nullptr));
+        }
+        if (init->stage_force_test) {
+            static uint16_t opcode = init->stage_force_opcode;
+            static bool quit_after = init->test_autoquit;
+            CloseHandle(CreateThread(
+                nullptr, 0, [](LPVOID) -> DWORD { net::stage_test_loop(g_stop, opcode, quit_after); return 0; },
+                nullptr, 0,
+                nullptr));
+        }
         net::guest_hits_set_enabled(init->guest_hits, init->guest_hit_stagger);
         net::hits_set_react(init->player_hit_react, init->player_hit_lethal);
         net::puppet_map_pin_style(init->pin_shape, init->pin_colour);
@@ -767,6 +794,17 @@ DWORD WINAPI worker(LPVOID) {
             }
         }
 
+        // Unattended tests: keys pressed inside this game until the world loads (test_input.h).
+        if (in_game && cfg.dev_test_autoload) {
+            test_input_install();
+            static uint16_t key = cfg.dev_test_autoload_key;
+            static bool quit =
+                cfg.dev_test_autoquit && !cfg.dev_stage_force_test && !cfg.dev_stage_record && !cfg.dev_stage_replay;
+            CloseHandle(CreateThread(
+                nullptr, 0, [](LPVOID) -> DWORD { test_autoload_loop(g_stop, key, 4000, 15, quit); return 0; },
+                nullptr, 0, nullptr));
+        }
+
         if (cfg.startup_delay_ms > 0 && stop_requested(cfg.startup_delay_ms)) return 0;
 
         LocalSource local(in_game);
@@ -794,6 +832,12 @@ DWORD WINAPI worker(LPVOID) {
                                                       cfg.coop_enemies_target_copy,
                                                       in_game && cfg.dev_enemy_relay,
                                                       in_game && cfg.dev_piece4_test,
+                                                      in_game && cfg.dev_stage_force_test,
+                                                      cfg.dev_stage_force_opcode,
+                                                      cfg.dev_test_autoquit,
+                                                      in_game && cfg.dev_stage_record,
+                                                      in_game && cfg.dev_stage_replay,
+                                                      cfg.dev_stage_record_stay_s,
                                                       cfg.coop_guest_hits, cfg.coop_guest_hit_stagger,
                                                       cfg.coop_player_hit_react, cfg.coop_player_hit_lethal,
                                                       in_game && cfg.dev_attack_probe, cfg.coop_copy_attack_slots,
