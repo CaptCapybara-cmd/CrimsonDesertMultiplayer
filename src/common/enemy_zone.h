@@ -76,7 +76,10 @@ public:
         Why why = Why::None;
     };
 
-    explicit EnemyZoneMachine(Settings s = {}) : s_(s) {}
+    // Two constructors instead of `Settings s = {}`: clang rejects a default argument
+    // that needs a nested struct's member initializers inside the enclosing class.
+    EnemyZoneMachine() : s_() {}
+    explicit EnemyZoneMachine(Settings s) : s_(s) {}
 
     Step tick(const Input& in) {
         Step st;
