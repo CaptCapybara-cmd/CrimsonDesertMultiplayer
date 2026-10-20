@@ -410,4 +410,22 @@ std::optional<EnemyZoneMsg> decode_enemy_zone(std::span<const uint8_t> bytes) {
     return m;
 }
 
+std::vector<uint8_t> encode_stage_branch(const StageBranchMsg& msg) {
+    Writer w;
+    w.u32(msg.key);
+    w.u32(msg.branch);
+    w.u16(msg.flags);
+    return w.take();
+}
+
+std::optional<StageBranchMsg> decode_stage_branch(std::span<const uint8_t> bytes) {
+    Reader r(bytes);
+    StageBranchMsg m;
+    m.key = r.u32();
+    m.branch = r.u32();
+    m.flags = r.u16();
+    if (!r.ok() || !r.at_end() || m.key == 0 || m.branch == 0xFFFFFFFF) return std::nullopt;
+    return m;
+}
+
 }  // namespace cdmp::proto

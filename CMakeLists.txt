@@ -105,6 +105,8 @@ add_library(cdmp_mod SHARED
     src/mod/net/piece4_test.cpp
     src/mod/net/stage_force_test.cpp
     src/mod/net/stage_replay.cpp
+    src/mod/net/stage_tracker.cpp
+    src/mod/net/stage_sync.cpp
     src/mod/test_input.cpp
     src/mod/net/guest_hits.cpp
     src/mod/net/learnt_store.cpp

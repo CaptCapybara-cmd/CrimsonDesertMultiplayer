@@ -20,9 +20,6 @@
 
 namespace cdmp::net {
 
-// Sniffer writer thread (packets with their 5-byte header).
-void stage_replay_observe_s2c(const uint8_t* packet, size_t size);
-void stage_replay_observe_c2s(const uint8_t* packet, size_t size);
 // Own thread. `dir` is the mod folder; `stay_s` = seconds in the world before
 // a record session ends; `quit_after` closes the game when done. `stop` is a HANDLE.
 void stage_replay_loop(void* stop, const std::wstring& dir, bool record, bool replay, uint32_t stay_s,

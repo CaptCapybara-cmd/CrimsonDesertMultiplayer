@@ -18,6 +18,7 @@
 #include "mod/net/player_hits.h"
 #include "mod/net/puppet_minimap.h"
 #include "mod/net/remote_puppet.h"
+#include "mod/net/stage_sync.h"
 #include "mod/net/time_sync.h"
 #include "mod/net/troc_sniffer.h"
 
@@ -155,6 +156,13 @@ void CoopLink::update(const std::optional<proto::Vec3>& local_pos, const proto::
     const auto work_from = std::chrono::steady_clock::now();
     enemy_set_linked(connected && g_ready);
     update_enemy_zone(connected && g_ready, local_pos, now_ms);
+    {
+        const bool host = session_.role() == ClientSession::Role::Responder;
+        const bool echo = partner_.rfind("cdmp_peer", 0) == 0;
+        for (const auto& m : stage_sync_tick(connected && g_ready, host, echo, local_in_world_, now_ms)) {
+            session_.send_reliable(proto::RelKind::StageBranch, proto::encode_stage_branch(m), now_ms);
+        }
+    }
     if (!connected || !g_ready) return;
     enemy_tick();
     loot_tick();
@@ -444,6 +452,7 @@ bool CoopLink::accepts(proto::RelKind kind) const {
         case proto::RelKind::EnemySpawn:
         case proto::RelKind::EnemyRemove:
         case proto::RelKind::EnemyState:
+        case proto::RelKind::StageBranch:  // only the host's game chooses for both
             return !host;
         default:
             return true;
@@ -566,6 +575,8 @@ void CoopLink::on_reliable(const ReliableChannel::Message& msg, uint32_t now_ms)
         enemy_on_state(msg.bytes, delay_ms_);
     } else if (msg.kind == proto::RelKind::EnemyZone) {
         on_enemy_zone(msg.bytes, now_ms);
+    } else if (msg.kind == proto::RelKind::StageBranch) {
+        stage_sync_on_message(msg.bytes, now_ms);
     } else if (msg.kind == proto::RelKind::Despawn && msg.bytes.size() >= 4) {
         uint32_t gen = 0;
         std::memcpy(&gen, msg.bytes.data(), 4);

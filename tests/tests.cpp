@@ -13,6 +13,7 @@
 #include "common/clock_mapper.h"
 #include "common/enemy_load.h"
 #include "common/enemy_zone.h"
+#include "common/stage_sync.h"
 #include "common/equip_state.h"
 #include "common/field_time.h"
 #include "common/inject_clock.h"
@@ -1037,6 +1038,61 @@ void test_enemy_zone_predicate() {
     CHECK(flat_distance({0, 0, 0}, {3, 100, 4}) == 5.0f);
 }
 
+void test_stage_branch_message() {
+    proto::StageBranchMsg m{0xF4CB1, 1, 0};
+    auto bytes = proto::encode_stage_branch(m);
+    CHECK(bytes.size() == proto::kStageBranchMsgSize);
+    auto d = proto::decode_stage_branch(bytes);
+    CHECK(d && d->key == 0xF4CB1 && d->branch == 1 && d->flags == 0);
+    CHECK(!proto::decode_stage_branch(proto::encode_stage_branch({0, 1, 0})));            // no key
+    CHECK(!proto::decode_stage_branch(proto::encode_stage_branch({5, 0xFFFFFFFF, 0})));   // "no branch"
+    auto bad = bytes;
+    bad.push_back(0);
+    CHECK(!proto::decode_stage_branch(bad));
+    bad = bytes;
+    bad.pop_back();
+    CHECK(!proto::decode_stage_branch(bad));
+}
+
+void test_stage_sync_queue() {
+    constexpr uint32_t kNone = 0xFFFFFFFF;
+    StageSyncQueue q;
+    // Nothing here yet: held.
+    CHECK(q.push({0xF4CB1, 0, 0}, 1000));
+    CHECK(q.tick({}, 1100).empty() && q.pending() == 1);
+    // The stage shows up waiting under its own instance id: sent once, not again before retry.
+    std::vector<LocalStage> local{{0x164, 0xF4CB1, 0, kNone}, {0x165, 0xF4CB5, 0, kNone}};
+    auto a = q.tick(local, 2000);
+    CHECK(a.size() == 1 && a[0].instance == 0x164 && a[0].branch == 0 && a[0].key == 0xF4CB1);
+    CHECK(q.tick(local, 3000).empty());
+    a = q.tick(local, 7000);  // no answer for 5 s: again
+    CHECK(a.size() == 1 && q.counters().sent == 2);
+    // The server answered: done, counted as applied.
+    local[0] = {0x164, 0xF4CB1, 1, 0};
+    CHECK(q.tick(local, 7100).empty() && q.pending() == 0 && q.counters().applied == 1);
+    // Later branches of one stage wait for the earlier one; a stage that went another way is not touched.
+    CHECK(q.push({0xF4CB5, 0, 0}, 8000) && q.push({0xF4CB5, 1, 0}, 8000));
+    a = q.tick(local, 8100);
+    CHECK(a.size() == 1 && a[0].instance == 0x165 && a[0].branch == 0);
+    local[1] = {0x165, 0xF4CB5, 1, 0};
+    CHECK(q.tick(local, 8200).empty() && q.pending() == 1);  // branch 1: stage not waiting, held
+    CHECK(q.tick(local, 8200 + 120001).empty() && q.pending() == 0 && q.counters().expired == 1);
+    // The guest's game got there by itself: dropped without sending.
+    CHECK(q.push({0xF4880, 0, 0}, 9000));
+    CHECK(q.tick({{0x20, 0xF4880, 1, 0}}, 9100).empty() && q.counters().reached_alone == 1);
+    // Our own game is choosing a branch for it right now: not touched, then counted as reached alone.
+    CHECK(q.push({0xF4893, 0, 0}, 9150));
+    CHECK(q.tick({{0x163, 0xF4893, 0, kNone, true}}, 9160).empty());
+    CHECK(q.tick({{0x163, 0xF4893, 1, 0}}, 9170).empty() && q.counters().reached_alone == 2);
+    // A stage whose key is not known yet is never sent anything.
+    CHECK(q.push({0xF4880, 0, 0}, 9200));
+    CHECK(q.tick({{0x21, 0, 0, kNone}}, 9300).empty());
+    // Bounded.
+    StageSyncQueue small(StageSyncQueue::Settings{120000, 5000, 2});
+    CHECK(small.push({1, 0, 0}, 0) && small.push({2, 0, 0}, 0) && !small.push({3, 0, 0}, 0));
+    CHECK(small.counters().refused == 1);
+}
+
 void test_enemy_zone_message() {
     proto::EnemyZoneMsg req;
     req.flags = proto::EnemyZoneMsg::kOn | proto::EnemyZoneMsg::kDryRun;
@@ -1081,8 +1137,8 @@ void test_enemy_zone_message() {
     for (uint16_t i = 0; i < n; ++i) many.insert(many.end(), {1, 0, 0, 0});
     CHECK(!proto::decode_enemy_zone(many));
     CHECK(!proto::decode_enemy_zone({}));
-    // The session hands kind 8 to the game; a newer kind is dropped.
-    static_assert(proto::kMaxRelKind == static_cast<uint8_t>(proto::RelKind::EnemyZone));
+    // The session hands kinds up to 9 (StageBranch) to the game; a newer kind is dropped.
+    static_assert(proto::kMaxRelKind == static_cast<uint8_t>(proto::RelKind::StageBranch));
 }
 
 void test_enemy_zone_machine() {
@@ -1351,6 +1407,8 @@ int main() {
     test_session_host_guest();
     test_enemy_zone_predicate();
     test_enemy_zone_message();
+    test_stage_branch_message();
+    test_stage_sync_queue();
     test_enemy_zone_machine();
     if (g_failures == 0) std::printf("All tests passed\n");
     return g_failures == 0 ? 0 : 1;

@@ -30,6 +30,7 @@
 #include "mod/net/piece4_test.h"
 #include "mod/net/stage_force_test.h"
 #include "mod/net/stage_replay.h"
+#include "mod/net/stage_sync.h"
 #include "mod/test_input.h"
 #include "mod/net/player_hits.h"
 #include "mod/net/puppet_minimap.h"
@@ -774,6 +775,10 @@ DWORD WINAPI worker(LPVOID) {
             net::puppet_minimap_set_enemy_offset(cfg.coop_enemy_minimap_icon);
             net::puppet_want_rope_bend(cfg.dev_rope_bend);
             net::time_sync_set_mode(static_cast<net::TimeSyncMode>(cfg.coop_time_sync));
+            net::stage_sync_configure({cfg.coop_stage_sync,
+                                       cfg.coop_stage_sync && cfg.dev_stage_sync_feed ? dir + L"\\cdmp_stage_record.txt"
+                                                                                      : std::wstring(),
+                                       cfg.dev_test_autoquit});
             net::time_sync_set_dev_key(cfg.dev_time_sync_key);
             // Phase 5: only the guest hides its own enemies (the host relays them).
             if (!cfg.net_role_host && cfg.coop_suppress != 0) {
@@ -799,7 +804,8 @@ DWORD WINAPI worker(LPVOID) {
             test_input_install();
             static uint16_t key = cfg.dev_test_autoload_key;
             static bool quit =
-                cfg.dev_test_autoquit && !cfg.dev_stage_force_test && !cfg.dev_stage_record && !cfg.dev_stage_replay;
+                cfg.dev_test_autoquit && !cfg.dev_stage_force_test && !cfg.dev_stage_record && !cfg.dev_stage_replay &&
+                !(cfg.coop_stage_sync && cfg.dev_stage_sync_feed);
             CloseHandle(CreateThread(
                 nullptr, 0, [](LPVOID) -> DWORD { test_autoload_loop(g_stop, key, 4000, 15, quit); return 0; },
                 nullptr, 0, nullptr));

@@ -57,6 +57,9 @@ struct Config {
     bool dev_test_autoquit = false;
     // Record the game's own stage branches / replay them by static key (stage_replay.h); replay writes to the game.
     bool dev_stage_record = false;
+    // Quest stage sync (stage_sync.h), experimental; the feed is its one-PC test through cdmp_peer.
+    bool coop_stage_sync = false;
+    bool dev_stage_sync_feed = false;
     bool dev_stage_replay = false;
     uint32_t dev_stage_record_stay_s = 240;
     // Every 2 s, log who sits in the attacker lists of our player and of the

@@ -27,8 +27,9 @@ inline constexpr uint32_t kMagic = 0x504D4443;  // bytes "CDMP"
 // messages name the receiver itself with kSelfMarker. 7: the gear in
 // SpawnInfo keeps a removal for each slot the sender's template had filled
 // (equip_state.h); a v6 peer would lose them. 8: TimeSync events. 9: EnemyZone
-// (the guest hides its own enemies near the host, who relays them all).
-inline constexpr uint16_t kVersion = 9;
+// (the guest hides its own enemies near the host, who relays them all). 10:
+// StageBranch (the host's quest stage branches, replayed by the guest).
+inline constexpr uint16_t kVersion = 10;
 // Hello and Welcome start the same in every version from 5 (name, then the
 // rest), so a peer with another version is recognised and reported instead
 // of being ignored in silence.
@@ -94,8 +95,9 @@ enum class RelKind : uint8_t {
     EnemyRemove = 6,  // n x u32 copy key
     EnemyState = 7,   // u16 opcode + server->client message about such a copy (HP, death)
     EnemyZone = 8,    // EnemyZoneMsg: the guest's enemy zone and the host's answer
+    StageBranch = 9,  // StageBranchMsg: a quest stage branch the host's game chose (stage_sync.h)
 };
-inline constexpr uint8_t kMaxRelKind = 8;  // newer kinds are acknowledged and dropped
+inline constexpr uint8_t kMaxRelKind = 9;  // newer kinds are acknowledged and dropped
 
 // In a sender's enemy messages, the receiver itself (the sender's copy of
 // the receiver, 0xA010F001 there; the receiver's own player key is not
@@ -239,5 +241,18 @@ std::vector<uint8_t> encode_enemy_zone(const EnemyZoneMsg& msg);
 // nullopt for an unknown flag, a radius outside 50-300 m, a request with
 // factions, more than kMaxZoneFactions, a faction 0, or any byte too many or few.
 std::optional<EnemyZoneMsg> decode_enemy_zone(std::span<const uint8_t> bytes);
+
+// A quest stage branch the host's game chose (StageBranchStateReq), named by the
+// stage's static sequencer key: runtime stage instance ids differ per PC.
+// Wire: u32 sequencer key | u32 branch | u16 flags (10 bytes).
+struct StageBranchMsg {
+    uint32_t key = 0;
+    uint32_t branch = 0;
+    uint16_t flags = 0;
+};
+inline constexpr size_t kStageBranchMsgSize = 10;
+std::vector<uint8_t> encode_stage_branch(const StageBranchMsg& msg);
+// nullopt for key 0, branch 0xFFFFFFFF ("no branch") or any byte too many or few.
+std::optional<StageBranchMsg> decode_stage_branch(std::span<const uint8_t> bytes);
 
 }  // namespace cdmp::proto
