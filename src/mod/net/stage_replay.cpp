@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <format>
 #include <fstream>
 #include <map>
@@ -11,6 +12,7 @@
 
 #include "mod/log.h"
 #include "mod/net/local_capture.h"
+#include "mod/net/mission_watch.h"
 #include "mod/net/quest_rng.h"
 #include "common/stage_sync.h"
 #include "mod/net/stage_tracker.h"
@@ -262,6 +264,28 @@ void stage_replay_loop(void* stop, const std::wstring& dir, bool record, bool re
                        bool quit_after, uint32_t rng_pin) {
     const std::wstring path = dir + L"\\cdmp_stage_record.txt";
     log::warn("StageReplay: {} (test copy only; do not save)", record ? "RECORD" : "REPLAY, it WRITES quest state");
+    // Dev diagnostic, read here only: [dev] mission_watch=1|2|3, mission_watch_sig_off, mission_watch_tmpl_off,
+    // mission_watch_force_template (decimal).
+    const std::wstring ini = dir + L"\\cdmp.ini";
+    MissionWatchSettings mw;
+    mw.mode = static_cast<int>(GetPrivateProfileIntW(L"dev", L"mission_watch", 0, ini.c_str()));
+    mw.sig_off = static_cast<int>(GetPrivateProfileIntW(L"dev", L"mission_watch_sig_off", 0, ini.c_str()));
+    mw.tmpl_off = static_cast<int>(GetPrivateProfileIntW(L"dev", L"mission_watch_tmpl_off", 0, ini.c_str()));
+    mw.force_template = GetPrivateProfileIntW(L"dev", L"mission_watch_force_template", 0, ini.c_str());
+    // mission_watch_force_more = the request's other slots as negative decimals, e.g. "-2057,-2058".
+    {
+        wchar_t buf[128] = {};
+        GetPrivateProfileStringW(L"dev", L"mission_watch_force_more", L"", buf, 128, ini.c_str());
+        int n = 0;
+        for (wchar_t* p = buf; *p && n < 4;) {
+            wchar_t* end = nullptr;
+            const long v = std::wcstol(p, &end, 10);
+            if (end == p) break;
+            mw.force_more[n++] = static_cast<uint32_t>(v);
+            p = *end == L',' ? end + 1 : end;
+        }
+    }
+    if (replay) mission_watch_configure(mw);
     const bool rng_hooked = quest_rng_install(replay && rng_pin != 0);
     if (rng_pin && !rng_hooked) log::error("StageReplay: rand pin 0x{:08X} requested but the hook is not in", rng_pin);
     while (!in_world()) {

@@ -16,6 +16,7 @@
 #include "mod/game/offsets.h"
 #include "mod/game/safe_memory.h"
 #include "mod/log.h"
+#include "mod/net/mission_watch.h"
 
 namespace cdmp::net {
 namespace {
@@ -143,6 +144,7 @@ void on_handler(safetyhook::Context&) {
         log::info("QuestRng: QuestDialogEndReq on thread {}: rand state 0x{:08X}", GetCurrentThreadId(), *state);
     }
     g_last = *state;
+    mission_watch_on_accept();
 }
 
 }  // namespace

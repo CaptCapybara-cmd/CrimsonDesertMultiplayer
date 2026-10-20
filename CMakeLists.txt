@@ -104,6 +104,7 @@ add_library(cdmp_mod SHARED
     src/mod/net/player_hits.cpp
     src/mod/net/piece4_test.cpp
     src/mod/net/stage_force_test.cpp
+    src/mod/net/mission_watch.cpp
     src/mod/net/quest_rng.cpp
     src/mod/net/stage_replay.cpp
     src/mod/net/stage_tracker.cpp
