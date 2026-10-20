@@ -17,6 +17,11 @@ constexpr uint16_t kOpPrepareSequencerAck = 2661;  // hdr5 | u32 player | u64 in
 constexpr uint16_t kOpUpdateQuestListAck = 2808;   // u8 scope | u32 player | u8 a | u8 b | 34-byte quests
 constexpr size_t kQuestSize = 34;                  // u32 key | u32 | u64 | u64 | u64 | u8 state | u8 flag
 constexpr size_t kMaxQuestDeltas = 512;
+constexpr uint16_t kOpUpdateMissionListAck = 3009;   // u8 scope | u32 player | u8 a | u8 b | 55-byte missions
+constexpr uint16_t kOpQuestDialogEndReq = 2342;      // u32 npc | u32 dialog key | u32 answer | ... (30 bytes)
+constexpr uint16_t kOpSetQuestDialogObstacleReq = 2621;  // u32 actor | u8 on
+constexpr size_t kMaxMissionChanges = 512;
+constexpr size_t kMaxDialogs = 64;
 constexpr uint32_t kNoBranch = 0xFFFFFFFF;
 constexpr size_t kMaxInstances = 4096;
 constexpr size_t kMaxGameBranches = 256;
@@ -25,6 +30,10 @@ std::mutex g_mutex;
 std::map<uint64_t, StageInfo> g_stages;
 std::vector<GameBranch> g_game_branches;
 std::vector<QuestDelta> g_quest_deltas;
+MissionRows g_missions;
+std::vector<MissionChange> g_mission_changes;
+std::vector<DialogMsg> g_dialogs;
+int g_dialogs_ours = 0;
 bool g_collect = false;
 // Our own injected requests pass the same capture: one per instance is ours.
 std::map<uint64_t, int> g_ours;
@@ -51,7 +60,12 @@ void stage_tracker_observe_s2c(const uint8_t* packet, size_t size) {
     if (size < 5 + 5 + 8) return;
     const uint16_t op = at<uint16_t>(packet);
     const uint8_t* p = packet + 5;
-    if (op == kOpUpdateQuestListAck && size >= 5 + 7) {
+    if (op == kOpUpdateMissionListAck) {
+        std::lock_guard lock(g_mutex);
+        for (const auto& c : g_missions.observe({p, size - 5})) {
+            if (g_mission_changes.size() < kMaxMissionChanges) g_mission_changes.push_back(c);
+        }
+    } else if (op == kOpUpdateQuestListAck && size >= 5 + 7) {
         // Only deltas (a = 0): the full list at load (a = 1) is not news.
         if (p[5] != 0 || (size - 5 - 7) % kQuestSize != 0) return;
         std::lock_guard lock(g_mutex);
@@ -78,6 +92,15 @@ void stage_tracker_observe_s2c(const uint8_t* packet, size_t size) {
 }
 
 void stage_tracker_observe_c2s(const uint8_t* packet, size_t size) {
+    if (size >= 5 && (at<uint16_t>(packet) == kOpQuestDialogEndReq || at<uint16_t>(packet) == kOpSetQuestDialogObstacleReq)) {
+        std::lock_guard lock(g_mutex);
+        if (g_dialogs_ours > 0) {
+            --g_dialogs_ours;
+        } else if (g_collect && g_dialogs.size() < kMaxDialogs) {
+            g_dialogs.push_back({at<uint16_t>(packet), {packet + 5, packet + size}, GetTickCount64()});
+        }
+        return;
+    }
     if (size < 5 + 14 || at<uint16_t>(packet) != kOpStageBranchStateReq) return;
     const uint8_t* p = packet + 5;
     const uint64_t instance = at<uint64_t>(p);
@@ -124,7 +147,10 @@ std::vector<LocalStage> stage_tracker_local() {
 void stage_tracker_collect(bool on) {
     std::lock_guard lock(g_mutex);
     g_collect = on;
-    if (!on) g_game_branches.clear();
+    if (!on) {
+        g_game_branches.clear();
+        g_dialogs.clear();
+    }
 }
 
 std::vector<GameBranch> stage_tracker_take_game_branches() {
@@ -157,6 +183,37 @@ std::vector<QuestDelta> stage_tracker_take_quest_deltas() {
     std::vector<QuestDelta> out;
     out.swap(g_quest_deltas);
     return out;
+}
+
+std::vector<MissionChange> stage_tracker_take_mission_changes() {
+    std::lock_guard lock(g_mutex);
+    std::vector<MissionChange> out;
+    out.swap(g_mission_changes);
+    return out;
+}
+
+std::vector<DialogMsg> stage_tracker_take_dialogs() {
+    std::lock_guard lock(g_mutex);
+    std::vector<DialogMsg> out;
+    out.swap(g_dialogs);
+    return out;
+}
+
+bool stage_tracker_send_dialog(uint16_t op, const std::vector<uint8_t>& payload) {
+    if ((op != kOpQuestDialogEndReq && op != kOpSetQuestDialogObstacleReq) || payload.size() > 0xFFFF) return false;
+    std::vector<uint8_t> p(5 + payload.size());
+    const uint16_t len = static_cast<uint16_t>(payload.size());
+    std::memcpy(p.data(), &op, 2);
+    std::memcpy(p.data() + 3, &len, 2);
+    std::memcpy(p.data() + 5, payload.data(), payload.size());
+    {
+        std::lock_guard lock(g_mutex);
+        ++g_dialogs_ours;
+    }
+    if (sniffer_inject_c2s(std::move(p))) return true;
+    std::lock_guard lock(g_mutex);
+    if (g_dialogs_ours > 0) --g_dialogs_ours;
+    return false;
 }
 
 void stage_tracker_reset() {

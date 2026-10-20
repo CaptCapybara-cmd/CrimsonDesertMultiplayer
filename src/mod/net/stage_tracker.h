@@ -10,6 +10,7 @@
 #include <optional>
 #include <vector>
 
+#include "common/mission_rows.h"
 #include "common/stage_sync.h"
 
 namespace cdmp::net {
@@ -39,6 +40,15 @@ struct QuestDelta {
     uint8_t flag = 0;
 };
 
+// A quest dialog message the game itself sent (QuestDialogEndReq 2342 = the
+// answer, SetQuestDialogObstacleReq 2621 = conversation open/closed), whole
+// payload, while collecting. Accepting a quest goes this way, not by a stage branch.
+struct DialogMsg {
+    uint16_t op = 0;
+    std::vector<uint8_t> payload;
+    uint64_t ms = 0;  // GetTickCount64 when seen
+};
+
 // Sniffer writer thread (packets with their 5-byte header).
 void stage_tracker_observe_s2c(const uint8_t* packet, size_t size);
 void stage_tracker_observe_c2s(const uint8_t* packet, size_t size);
@@ -54,6 +64,13 @@ std::vector<GameBranch> stage_tracker_take_game_branches();
 bool stage_tracker_send_branch(uint64_t instance, uint32_t branch, uint16_t flags);
 // Quest list deltas since the last call.
 std::vector<QuestDelta> stage_tracker_take_quest_deltas();
+// Mission rows that appeared or changed since the last call (mission_rows.h).
+std::vector<MissionChange> stage_tracker_take_mission_changes();
+// Dialog messages the game sent since the last call (only while collecting is on).
+std::vector<DialogMsg> stage_tracker_take_dialogs();
+// Sends a dialog message (op 2342 or 2621, payload without header) to our own
+// server; the copy the sniffer sees is not counted as the game's own.
+bool stage_tracker_send_dialog(uint16_t op, const std::vector<uint8_t>& payload);
 // A new world (loading screen): instance ids are reused, forget them.
 void stage_tracker_reset();
 

@@ -5,10 +5,15 @@
 //
 //   [dev] stage_record=1  every StageBranchStateReq the game sends is written to
 //                         cdmp_stage_record.txt as "sequencer_key branch flags", and
-//                         every quest list change as "Q quest_key state flag".
+//                         every quest list change as "Q quest_key state flag", every
+//                         mission row that appears or changes as "M key kind state", and
+//                         every quest dialog message (answer 2342, open/close 2621) as
+//                         "D op ms hex" (accepting a quest goes this way, NOTES.md 2026-10-20).
 //   [dev] stage_replay=1  feeds all recorded branches through the stage sync queue
-//                         (common/stage_sync.h) onto this session's instances, and
-//                         checks that the recorded quest changes happen here too.
+//                         (common/stage_sync.h) onto this session's instances, sends the
+//                         recorded dialog messages 20 s into the world (recorded gaps, at
+//                         most 3 s), and checks that the recorded quest and mission
+//                         changes happen here too.
 //                         Logs "StageReplay: RESULT: PASS|FAIL|SKIP".
 // Only branches the game really sent are replayed: a made-up branch number
 // crashes the game (NOTES.md 2026-10-19 16:18). Test copy only; never save.

@@ -4,6 +4,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <initializer_list>
+#include <tuple>
 #include <utility>
 #include <limits>
 #include <vector>
@@ -13,6 +15,7 @@
 #include "common/clock_mapper.h"
 #include "common/enemy_load.h"
 #include "common/enemy_zone.h"
+#include "common/mission_rows.h"
 #include "common/move_thinner.h"
 #include "common/stage_sync.h"
 #include "common/equip_state.h"
@@ -1120,6 +1123,40 @@ void test_stage_sync_queue() {
     CHECK(small.counters().refused == 1);
 }
 
+std::vector<uint8_t> mission_list(std::initializer_list<std::tuple<uint32_t, uint8_t, uint8_t, uint8_t>> rows) {
+    std::vector<uint8_t> p{4, 1, 0, 0x10, 0xA0, 0, 0};
+    for (const auto& [key, kind, state, extra] : rows) {
+        std::vector<uint8_t> r(MissionRows::kRow, 0);
+        std::memcpy(r.data(), &key, 4);
+        r[4] = kind;
+        r[5] = state;
+        r[40] = extra;
+        p.insert(p.end(), r.begin(), r.end());
+    }
+    return p;
+}
+
+void test_mission_rows() {
+    MissionRows m;
+    // The list as loaded: everything is new.
+    auto c = m.observe(mission_list({{0xF461C, 1, 2, 0}, {0xF4AB4, 1, 1, 0}}));
+    CHECK(c.size() == 2 && c[0].added && m.size() == 2);
+    // The same list re-sent (every ~10 s): nothing.
+    CHECK(m.observe(mission_list({{0xF461C, 1, 2, 0}, {0xF4AB4, 1, 1, 0}})).empty());
+    // A partial message with three new rows (accepting "Renee's Request").
+    c = m.observe(mission_list({{0xFFFFF7F8, 5, 1, 0}, {0xFFFFF7F7, 2, 1, 0}, {0xFFFFF7F6, 2, 0, 0}}));
+    CHECK(c.size() == 3 && c[0].key == 0xFFFFF7F8 && c[0].kind == 5 && c[0].state == 1 && c[2].state == 0 && c[2].added);
+    CHECK(c[0].row[4] == 5 && c[0].row[40] == 0);
+    // A changed row, also when only a byte past the state changes.
+    c = m.observe(mission_list({{0xF4AB4, 1, 2, 0}, {0xF461C, 1, 2, 7}}));
+    CHECK(c.size() == 2 && !c[0].added && c[0].state == 2 && c[1].key == 0xF461C);
+    CHECK(c[1].row[40] == 7);  // the whole row travels: two requests in one slot differ only past the state
+    // Malformed: ignored.
+    auto bad = mission_list({{1, 1, 1, 0}});
+    bad.pop_back();
+    CHECK(m.observe(bad).empty() && m.observe(std::vector<uint8_t>{1, 2}).empty());
+}
+
 void test_enemy_zone_message() {
     proto::EnemyZoneMsg req;
     req.flags = proto::EnemyZoneMsg::kOn | proto::EnemyZoneMsg::kDryRun;
@@ -1437,6 +1474,7 @@ int main() {
     test_move_thinner();
     test_stage_branch_message();
     test_stage_sync_queue();
+    test_mission_rows();
     test_enemy_zone_machine();
     if (g_failures == 0) std::printf("All tests passed\n");
     return g_failures == 0 ? 0 : 1;
