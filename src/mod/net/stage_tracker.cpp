@@ -17,6 +17,7 @@ constexpr uint16_t kOpPrepareSequencerAck = 2661;  // hdr5 | u32 player | u64 in
 constexpr uint16_t kOpUpdateQuestListAck = 2808;   // u8 scope | u32 player | u8 a | u8 b | 34-byte quests
 constexpr size_t kQuestSize = 34;                  // u32 key | u32 | u64 | u64 | u64 | u8 state | u8 flag
 constexpr size_t kMaxQuestDeltas = 512;
+constexpr uint16_t kOpActorLoadDataAck = 2005;      // u8 x3 | u32 runtime id | ... | u32 static key at +22
 constexpr uint16_t kOpUpdateMissionListAck = 3009;   // u8 scope | u32 player | u8 a | u8 b | 55-byte missions
 constexpr uint16_t kOpQuestDialogEndReq = 2342;      // u32 npc | u32 dialog key | u32 answer | ... (30 bytes)
 constexpr uint16_t kOpSetQuestDialogObstacleReq = 2621;  // u32 actor | u8 on
@@ -34,6 +35,8 @@ MissionRows g_missions;
 std::vector<MissionChange> g_mission_changes;
 std::vector<DialogMsg> g_dialogs;
 int g_dialogs_ours = 0;
+std::map<uint32_t, uint32_t> g_actor_static;   // runtime id -> static key
+std::map<uint32_t, uint32_t> g_actor_runtime;  // static key -> latest runtime id
 bool g_collect = false;
 // Our own injected requests pass the same capture: one per instance is ours.
 std::map<uint64_t, int> g_ours;
@@ -60,6 +63,15 @@ void stage_tracker_observe_s2c(const uint8_t* packet, size_t size) {
     if (size < 5 + 5 + 8) return;
     const uint16_t op = at<uint16_t>(packet);
     const uint8_t* p = packet + 5;
+    if (op == kOpActorLoadDataAck && size >= 5 + 26) {
+        const uint32_t rid = at<uint32_t>(p + 3), key = at<uint32_t>(p + 22);
+        std::lock_guard lock(g_mutex);
+        if (rid && key && g_actor_static.size() < 65536) {
+            g_actor_static[rid] = key;
+            g_actor_runtime[key] = rid;
+        }
+        return;
+    }
     if (op == kOpUpdateMissionListAck) {
         std::lock_guard lock(g_mutex);
         for (const auto& c : g_missions.observe({p, size - 5})) {
@@ -214,6 +226,18 @@ bool stage_tracker_send_dialog(uint16_t op, const std::vector<uint8_t>& payload)
     std::lock_guard lock(g_mutex);
     if (g_dialogs_ours > 0) --g_dialogs_ours;
     return false;
+}
+
+uint32_t stage_tracker_actor_static(uint32_t runtime_id) {
+    std::lock_guard lock(g_mutex);
+    const auto it = g_actor_static.find(runtime_id);
+    return it == g_actor_static.end() ? 0 : it->second;
+}
+
+uint32_t stage_tracker_actor_runtime(uint32_t static_key) {
+    std::lock_guard lock(g_mutex);
+    const auto it = g_actor_runtime.find(static_key);
+    return it == g_actor_runtime.end() ? 0 : it->second;
 }
 
 void stage_tracker_reset() {

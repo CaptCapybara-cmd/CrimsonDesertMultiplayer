@@ -71,6 +71,11 @@ std::vector<DialogMsg> stage_tracker_take_dialogs();
 // Sends a dialog message (op 2342 or 2621, payload without header) to our own
 // server; the copy the sniffer sees is not counted as the game's own.
 bool stage_tracker_send_dialog(uint16_t op, const std::vector<uint8_t>& payload);
+// NPCs as loaded (ActorLoadDataAck 2005: u32 runtime id at +3, u32 static character key
+// at +22, e.g. Renee 0x01C29010). Runtime ids change between loads; static keys do not.
+// 0 = not seen in this session.
+uint32_t stage_tracker_actor_static(uint32_t runtime_id);
+uint32_t stage_tracker_actor_runtime(uint32_t static_key);
 // A new world (loading screen): instance ids are reused, forget them.
 void stage_tracker_reset();
 

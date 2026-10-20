@@ -2,9 +2,13 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <atomic>
+#include <intrin.h>
+#include <iterator>
 #include <cstring>
 #include <format>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -123,6 +127,7 @@ DWORD WINAPI compare_later(LPVOID) {
 
 // --- mode 2: hardware write watch on the server thread ---
 std::atomic<int> g_write_logs{0};
+bool g_watch_reads = false;  // R/W = 11 (read or write) instead of 01 (write)
 uintptr_t g_watch[4] = {};
 int g_nwatch = 0;
 PVOID g_veh = nullptr;
@@ -152,8 +157,9 @@ LONG CALLBACK on_exception(EXCEPTION_POINTERS* ep) {
             if (!(dr6 & (1ull << i))) continue;
             uint32_t now = 0;
             copy_seh(g_watch[i], &now, 4);
-            log::info("MissionWatch: WRITE to 0x{:X} (now 0x{:X}) by exe+0x{:X} on thread {} | stack:{}", g_watch[i],
-                      now, c->Rip - g_exe_lo + 0x1000, GetCurrentThreadId(), stack);
+            log::info("MissionWatch: {} 0x{:X} (now 0x{:X}) by exe+0x{:X} on thread {} | stack:{}",
+                      g_watch_reads ? "ACCESS to" : "WRITE to", g_watch[i], now, c->Rip - g_exe_lo + 0x1000,
+                      GetCurrentThreadId(), stack);
         }
     }
     c->Dr6 = 0;
@@ -173,7 +179,7 @@ bool set_debug_regs(HANDLE thread, bool on) {
             for (int i = 0; i < g_nwatch; ++i) {
                 *drs[i] = g_watch[i];
                 // L_i enable, R/W = 01 (write), LEN = 11 (4 bytes)
-                c.Dr7 |= (1ull << (i * 2)) | (1ull << (16 + i * 4)) | (3ull << (18 + i * 4));
+                c.Dr7 |= (1ull << (i * 2)) | ((g_watch_reads ? 3ull : 1ull) << (16 + i * 4)) | (3ull << (18 + i * 4));
             }
         }
         c.Dr6 = 0;
@@ -264,7 +270,176 @@ void mission_watch_configure(const MissionWatchSettings& s) {
     }
 }
 
+// --- mode 4: the variant pool ---
+// Templates seen for Renee's Request in 13 sessions (NOTES.md 2026-10-20).
+constexpr uint32_t kSeenVariants[] = {0x0D2147, 0x0D214C, 0x0D2150, 0x0D2153, 0x0D2158, 0x0D215D, 0x0D2197,
+                                      0x0D219C, 0x0D219D, 0x0D21A5, 0x0D21C5, 0x0D2DA7};
+constexpr size_t kClusterBytes = 0x100000;
+const void* g_self_module = [] {
+    HMODULE m = nullptr;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCWSTR>(&kClusterBytes), &m);
+    return static_cast<const void*>(m);
+}();
+
+bool is_seen_variant(uint32_t v) {
+    for (uint32_t k : kSeenVariants) {
+        if (k == v) return true;
+    }
+    return false;
+}
+
+void scan_region_variants(uintptr_t base, size_t size, std::vector<std::pair<uintptr_t, uint32_t>>& out) {
+    __try {
+        const auto* p = reinterpret_cast<const uint32_t*>(base);
+        for (size_t i = 0; i < size / 4 && out.size() < 200000; ++i) {
+            const uint32_t v = p[i];
+            if (v >= 0x0D2147 && v <= 0x0D2DA7 && is_seen_variant(v)) out.push_back({base + i * 4, v});
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
+
+std::vector<std::pair<uintptr_t, uint32_t>> find_pool() {
+    const uint64_t t0 = GetTickCount64();
+    std::vector<std::pair<uintptr_t, uint32_t>> hits;
+    MEMORY_BASIC_INFORMATION mbi;
+    size_t scanned = 0;
+    for (uintptr_t a = 0x10000; a < 0x7FFFFFFF0000ull &&
+                                VirtualQuery(reinterpret_cast<void*>(a), &mbi, sizeof mbi) == sizeof mbi;) {
+        const auto base = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+        const DWORD prot = mbi.Protect & 0xFF;
+        const bool readable = prot == PAGE_READONLY || prot == PAGE_READWRITE || prot == PAGE_WRITECOPY ||
+                              prot == PAGE_EXECUTE_READ || prot == PAGE_EXECUTE_READWRITE;
+        // Not our own module (its kSeenVariants table matches itself).
+        const bool ours = mbi.AllocationBase == g_self_module;
+        if (mbi.State == MEM_COMMIT && readable && !(mbi.Protect & PAGE_GUARD) && !ours) {
+            scanned += mbi.RegionSize;
+            scan_region_variants(base, mbi.RegionSize, hits);
+        }
+        a = base + mbi.RegionSize;
+        if (a <= base) break;
+    }
+    log::info("MissionWatch: pool: {} dwords equal to a seen variant in {} MB ({} ms)", hits.size(), scanned >> 20,
+              GetTickCount64() - t0);
+    // Every hit (few expected), with its memory type: the layout tells what holds them.
+    for (size_t i = 0; i < hits.size() && i < 120; ++i) {
+        MEMORY_BASIC_INFORMATION m{};
+        VirtualQuery(reinterpret_cast<void*>(hits[i].first), &m, sizeof m);
+        uint8_t ctx[32] = {};
+        copy_seh(hits[i].first - 8, ctx, sizeof ctx);
+        std::string h;
+        for (uint8_t b : ctx) h += std::format("{:02X}", b);
+        log::info("MissionWatch: pool hit 0x{:X} = 0x{:X} (type 0x{:X}, prot 0x{:X}, alloc 0x{:X}) | -8: {}", hits[i].first,
+                  hits[i].second, m.Type, m.Protect, reinterpret_cast<uintptr_t>(m.AllocationBase), h);
+    }
+    // Clusters: hits within kClusterBytes of each other; rank by distinct variants.
+    struct Cluster {
+        uintptr_t lo, hi;
+        uint32_t distinct;
+        size_t count;
+    };
+    std::vector<Cluster> cl;
+    for (size_t i = 0; i < hits.size();) {
+        size_t j = i;
+        while (j + 1 < hits.size() && hits[j + 1].first - hits[j].first < kClusterBytes) ++j;
+        uint32_t mask = 0;
+        for (size_t k = i; k <= j; ++k) {
+            for (size_t v = 0; v < std::size(kSeenVariants); ++v) {
+                if (hits[k].second == kSeenVariants[v]) mask |= 1u << v;
+            }
+        }
+        const uint32_t distinct = static_cast<uint32_t>(__popcnt(mask));
+        if (distinct >= 3) cl.push_back({hits[i].first, hits[j].first, distinct, j - i + 1});
+        i = j + 1;
+    }
+    std::sort(cl.begin(), cl.end(), [](const Cluster& a, const Cluster& b) { return a.distinct > b.distinct; });
+    for (size_t c = 0; c < cl.size() && c < 12; ++c) {
+        std::string offs;
+        size_t shown = 0;
+        uintptr_t prev = 0;
+        for (const auto& [addr, v] : hits) {
+            if (addr < cl[c].lo || addr > cl[c].hi || shown >= 24) continue;
+            offs += std::format(" +0x{:X}:{:X}{}", addr - cl[c].lo, v,
+                                prev ? std::format("(d{:X})", addr - prev) : std::string());
+            prev = addr;
+            ++shown;
+        }
+        MEMORY_BASIC_INFORMATION m{};
+        VirtualQuery(reinterpret_cast<void*>(cl[c].lo), &m, sizeof m);
+        log::info("MissionWatch: pool cluster 0x{:X}-0x{:X}: {} distinct variants, {} hits, type 0x{:X} prot 0x{:X}:{}",
+                  cl[c].lo, cl[c].hi, cl[c].distinct, cl[c].count, m.Type, m.Protect, offs);
+    }
+    if (!cl.empty()) {
+        uint8_t dump[0x100];
+        if (copy_seh(cl[0].lo - 0x40, dump, sizeof dump)) {
+            std::string h;
+            for (size_t i = 0; i < sizeof dump; ++i) h += std::format("{:02X}{}", dump[i], (i % 32 == 31) ? " | " : "");
+            log::info("MissionWatch: pool best -0x40: {}", h);
+        }
+    }
+    return hits;
+}
+
 void mission_watch_on_accept() {
+    if (g_cfg.mode == 4) {
+        if (!g_busy.exchange(true)) {
+            find_pool();
+            g_busy = false;
+        }
+        return;
+    }
+    if (g_cfg.mode == 5) {
+        if (g_busy.exchange(true)) return;
+        const auto hits = find_pool();
+        // The private allocation with the most distinct variants holds the data records.
+        std::map<uintptr_t, uint32_t> masks;
+        for (const auto& [a, v] : hits) {
+            MEMORY_BASIC_INFORMATION m{};
+            VirtualQuery(reinterpret_cast<void*>(a), &m, sizeof m);
+            if (m.Type != MEM_PRIVATE) continue;
+            for (size_t i = 0; i < std::size(kSeenVariants); ++i) {
+                if (kSeenVariants[i] == v) masks[reinterpret_cast<uintptr_t>(m.AllocationBase)] |= 1u << i;
+            }
+        }
+        uintptr_t best = 0;
+        for (const auto& [b, m] : masks) {
+            if (!best || __popcnt(m) > __popcnt(masks[best])) best = b;
+        }
+        g_nwatch = 0;
+        uint32_t used = 0;
+        for (const auto& [a, v] : hits) {
+            MEMORY_BASIC_INFORMATION m{};
+            VirtualQuery(reinterpret_cast<void*>(a), &m, sizeof m);
+            if (reinterpret_cast<uintptr_t>(m.AllocationBase) != best || g_nwatch >= 4) continue;
+            for (size_t i = 0; i < std::size(kSeenVariants); ++i) {
+                if (kSeenVariants[i] == v && !(used & (1u << i))) {
+                    used |= 1u << i;
+                    g_watch[g_nwatch++] = a;
+                    log::info("MissionWatch: read-watching 0x{:X} (variant 0x{:X}'s record)", a, v);
+                }
+            }
+        }
+        if (!g_nwatch) {
+            g_busy = false;
+            return;
+        }
+        g_watch_reads = true;
+        const auto exe = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+        g_exe_lo = exe + 0x1000;
+        g_exe_hi = exe + 0x170D4000;
+        g_write_logs = 0;
+        if (!g_veh) g_veh = AddVectoredExceptionHandler(1, on_exception);
+        ArmArgs args{GetCurrentThreadId(), CreateEventW(nullptr, TRUE, FALSE, nullptr)};
+        if (HANDLE t = CreateThread(nullptr, 0, arm_thread, &args, 0, nullptr)) {
+            CloseHandle(t);
+            WaitForSingleObject(args.done, 5000);
+        } else {
+            g_busy = false;
+        }
+        CloseHandle(args.done);
+        return;
+    }
     if (!g_cfg.mode || g_cfg.mode == 3 || g_busy.exchange(true)) return;
     const uint64_t t0 = GetTickCount64();
     size_t scanned = 0;

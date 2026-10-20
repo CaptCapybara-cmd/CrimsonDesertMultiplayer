@@ -17,6 +17,13 @@
 //                   src's first 0xD8 bytes that looks like a template (0x0D0000-0x0DFFFF)
 //                   and differs from `force_template` is replaced by it first (the host's
 //                   variant on the guest); the offsets changed are logged.
+//   mode 4 (pool):  at the accept, find where several known variant templates of one
+//                   request sit close together in readable memory (the pool the roll
+//                   picks from): clusters, strides, a hex dump of the best one.
+//   mode 5 (pool read watch): mode 4's scan, then hardware READ/WRITE watches on the
+//                   template dword of 4 distinct variants' data records (the private
+//                   allocation holding the most distinct variants); logs who reads them
+//                   during the accept (the picker, if it looks at candidates).
 // Test copy only.
 
 #include <cstdint>
@@ -24,7 +31,7 @@
 namespace cdmp::net {
 
 struct MissionWatchSettings {
-    int mode = 0;                 // 0 off, 1 scan, 2 watch, 3 force
+    int mode = 0;                 // 0 off, 1 scan, 2 watch, 3 force, 4 pool, 5 pool read watch
     uint32_t key = 0xFFFFF7F8;    // the slot
     uint32_t sig = 0xC626D4D4;    // a dword the slot's object holds (position x, -10677.2f)
     int sig_off = 0;              // mode 2: signature's offset from the key

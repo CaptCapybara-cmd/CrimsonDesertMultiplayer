@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include <cstdio>
+#include <cstring>
 #include <cstdlib>
 #include <format>
 #include <fstream>
@@ -31,12 +32,15 @@ bool wait(void* stop, uint32_t ms) { return WaitForSingleObject(static_cast<HAND
 
 constexpr uint32_t kDialogAfterMs = 20000;  // in the world this long before the recorded dialog goes out
 constexpr uint64_t kDialogGapMaxMs = 3000;
+constexpr uint64_t kNpcWaitMs = 60000;
 
 // cdmp_stage_record.txt, in the order things happened:
 //   "KKKKKKKK branch flags"      a branch the game chose
 //   "Q KKKKKKKK state flag"      a quest list delta
 //   "M KKKKKKKK kind state hex"  a mission row that appeared or changed (hex = the whole 55-byte row)
 //   "D op ms hex"                a quest dialog message the game sent (ms = since the record started)
+//   "N RRRRRRRR SSSSSSSS"        an NPC in those messages: runtime id -> static character key
+//                                (runtime ids change between loads; the replay translates them)
 struct Recording {
     std::vector<proto::StageBranchMsg> branches;
     std::map<uint32_t, uint8_t> quests;  // quest key -> last recorded state
@@ -47,7 +51,10 @@ struct Recording {
         std::vector<uint8_t> payload;
     };
     std::vector<Dialog> dialogs;
+    std::map<uint32_t, uint32_t> npcs;  // recorded runtime id -> static key
 };
+
+bool is_npc_id(uint32_t id) { return (id >> 24) == 0xB0; }
 
 std::string hex(const std::vector<uint8_t>& b) {
     std::string s;
@@ -78,6 +85,14 @@ void append(const std::wstring& path, const std::vector<GameBranch>& branches, c
     for (const auto& d : dialogs) {
         out << "D " << d.op << ' ' << (d.ms > start ? d.ms - start : 0) << ' ' << hex(d.payload) << '\n';
         log::info("StageReplay: dialog message {} ({} bytes)", d.op, d.payload.size());
+        uint32_t id = 0;
+        if (d.payload.size() >= 4) std::memcpy(&id, d.payload.data(), 4);
+        if (is_npc_id(id)) {
+            const uint32_t key = stage_tracker_actor_static(id);
+            std::snprintf(line, sizeof line, "N %08X %08X", id, key);
+            out << line << '\n';
+            if (!key) log::warn("StageReplay: NPC 0x{:X} in a dialog has no known static key", id);
+        }
     }
     for (const auto& m : missions) {
         std::snprintf(line, sizeof line, "M %08X %u %u ", m.key, m.kind, m.state);
@@ -107,6 +122,8 @@ Recording load(const std::wstring& path) {
         if (std::sscanf(line.c_str(), "D %u %llu %4095s", &a, &ms, buf) == 3) {
             auto payload = unhex(buf);
             if (!payload.empty()) r.dialogs.push_back({static_cast<uint16_t>(a), ms, std::move(payload)});
+        } else if (std::sscanf(line.c_str(), "N %x %x", &key, &a) == 2) {
+            if (a) r.npcs[key] = a;
         } else if (std::sscanf(line.c_str(), "M %x %u %u %4095s", &key, &a, &b, buf) == 4) {
             r.missions[key] = unhex(buf);
         } else if (std::sscanf(line.c_str(), "Q %x %u %u", &key, &a, &b) == 3) {
@@ -193,7 +210,27 @@ void replay_session(void* stop, const std::wstring& path, uint32_t rng_pin) {
                     }
                     dialog_baseline = true;
                 }
-                const auto& d = rec.dialogs[next_dialog];
+                auto d = rec.dialogs[next_dialog];
+                // The NPC's runtime id in THIS session (by static key), or wait for it to load.
+                uint32_t id = 0;
+                if (d.payload.size() >= 4) std::memcpy(&id, d.payload.data(), 4);
+                if (const auto it = rec.npcs.find(id); it != rec.npcs.end()) {
+                    const uint32_t now_id = stage_tracker_actor_runtime(it->second);
+                    if (!now_id) {
+                        if (t - dialog_due > kNpcWaitMs) {
+                            log::error("StageReplay: NPC with static key 0x{:X} never loaded here; dialog not sent",
+                                       it->second);
+                            next_dialog = rec.dialogs.size();
+                            dialogs_done_ms = t;
+                        }
+                        continue;
+                    }
+                    if (now_id != id) {
+                        std::memcpy(d.payload.data(), &now_id, 4);
+                        log::info("StageReplay: NPC 0x{:X} (static 0x{:X}) is 0x{:X} in this session", id, it->second,
+                                  now_id);
+                    }
+                }
                 if (rng_pin && d.op == kOpQuestDialogEndReq) {
                     quest_rng_pin_next(rng_pin);
                     log::info("StageReplay: the server rand state for this answer is pinned to 0x{:08X}", rng_pin);
