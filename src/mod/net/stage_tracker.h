@@ -76,6 +76,21 @@ bool stage_tracker_send_dialog(uint16_t op, const std::vector<uint8_t>& payload)
 // 0 = not seen in this session.
 uint32_t stage_tracker_actor_static(uint32_t runtime_id);
 uint32_t stage_tracker_actor_runtime(uint32_t static_key);
+// For quest_share (host side): what the game and its server did around a quest
+// dialog answer, in order, with GetTickCount64 times. Collected only while enabled.
+struct QuestEvent {
+    enum class Type { Answer, ItemRemoved, Mission } type = Type::Answer;
+    uint64_t ms = 0;
+    std::vector<uint8_t> payload;  // Answer: the game's own QuestDialogEndReq payload
+    uint32_t npc_key = 0;          // Answer: the NPC's static key (0 = unknown)
+    MissionChange mission;         // Mission
+};
+void stage_tracker_quest_events(bool on);
+std::vector<QuestEvent> stage_tracker_take_quest_events();
+// Our own player's runtime id (from the mission list header), 0 = not seen yet.
+uint32_t stage_tracker_own_player();
+// A mission row's kind as our server last told it, -1 = no such row.
+int stage_tracker_mission_kind(uint32_t key);
 // A new world (loading screen): instance ids are reused, forget them.
 void stage_tracker_reset();
 

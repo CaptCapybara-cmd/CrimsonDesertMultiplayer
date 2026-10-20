@@ -28,8 +28,9 @@ inline constexpr uint32_t kMagic = 0x504D4443;  // bytes "CDMP"
 // SpawnInfo keeps a removal for each slot the sender's template had filled
 // (equip_state.h); a v6 peer would lose them. 8: TimeSync events. 9: EnemyZone
 // (the guest hides its own enemies near the host, who relays them all). 10:
-// StageBranch (the host's quest stage branches, replayed by the guest).
-inline constexpr uint16_t kVersion = 10;
+// StageBranch (the host's quest stage branches, replayed by the guest). 11:
+// QuestAccept (the host's accept of a quest, replayed by the guest).
+inline constexpr uint16_t kVersion = 11;
 // Hello and Welcome start the same in every version from 5 (name, then the
 // rest), so a peer with another version is recognised and reported instead
 // of being ignored in silence.
@@ -96,8 +97,9 @@ enum class RelKind : uint8_t {
     EnemyState = 7,   // u16 opcode + server->client message about such a copy (HP, death)
     EnemyZone = 8,    // EnemyZoneMsg: the guest's enemy zone and the host's answer
     StageBranch = 9,  // StageBranchMsg: a quest stage branch the host's game chose (stage_sync.h)
+    QuestAccept = 10, // QuestAcceptMsg: a quest the host accepted from an NPC (quest_accept.h)
 };
-inline constexpr uint8_t kMaxRelKind = 9;  // newer kinds are acknowledged and dropped
+inline constexpr uint8_t kMaxRelKind = 10;  // newer kinds are acknowledged and dropped
 
 // In a sender's enemy messages, the receiver itself (the sender's copy of
 // the receiver, 0xA010F001 there; the receiver's own player key is not
@@ -254,5 +256,28 @@ inline constexpr size_t kStageBranchMsgSize = 10;
 std::vector<uint8_t> encode_stage_branch(const StageBranchMsg& msg);
 // nullopt for key 0, branch 0xFFFFFFFF ("no branch") or any byte too many or few.
 std::optional<StageBranchMsg> decode_stage_branch(std::span<const uint8_t> bytes);
+
+// A quest the host accepted from an NPC (common/quest_accept.h). The NPC is named by its
+// static character key (runtime actor ids differ per PC and per load); `answer` is the
+// host's QuestDialogEndReq payload, whose first u32 (the NPC's runtime id) the guest
+// replaces with its own. `steps`: the mission rows the accept changed on the host, kind
+// before (0 = the row did not exist) and after; the guest checks both.
+// Wire: u32 npc_key | u8 n | answer[n] | u8 m | m x {u32 key | u8 before | u8 after}.
+struct QuestAcceptMsg {
+    struct Step {
+        uint32_t key = 0;
+        uint8_t before = 0, after = 0;
+        bool operator==(const Step&) const = default;
+    };
+    uint32_t npc_key = 0;
+    std::vector<uint8_t> answer;
+    std::vector<Step> steps;
+};
+inline constexpr size_t kMaxAcceptAnswer = 64;
+inline constexpr size_t kMaxAcceptSteps = 16;
+std::vector<uint8_t> encode_quest_accept(const QuestAcceptMsg& msg);
+// nullopt for npc_key 0, an answer shorter than 4 bytes or longer than kMaxAcceptAnswer,
+// no steps or more than kMaxAcceptSteps, a step key 0, or any byte too many or few.
+std::optional<QuestAcceptMsg> decode_quest_accept(std::span<const uint8_t> bytes);
 
 }  // namespace cdmp::proto

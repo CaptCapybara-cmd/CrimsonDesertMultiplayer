@@ -61,6 +61,9 @@ struct Config {
     bool dev_stage_record = false;
     // Quest stage sync (stage_sync.h), experimental; the feed is its one-PC test through cdmp_peer.
     bool coop_stage_sync = false;
+    // Quest accept sharing (quest_share.h), experimental; the feed is its one-PC test through cdmp_peer.
+    bool coop_quest_share = false;
+    bool dev_quest_share_feed = false;
     bool coop_move_thin = true;  // thin the other player's Moves to ~40 Hz (move_thinner.h)
     bool dev_stage_sync_feed = false;
     bool dev_stage_replay = false;

@@ -418,6 +418,43 @@ std::vector<uint8_t> encode_stage_branch(const StageBranchMsg& msg) {
     return w.take();
 }
 
+std::vector<uint8_t> encode_quest_accept(const QuestAcceptMsg& msg) {
+    Writer w;
+    w.u32(msg.npc_key);
+    const size_t n = msg.answer.size() < kMaxAcceptAnswer ? msg.answer.size() : kMaxAcceptAnswer;
+    w.u8(static_cast<uint8_t>(n));
+    w.bytes({msg.answer.data(), n});
+    const size_t m = msg.steps.size() < kMaxAcceptSteps ? msg.steps.size() : kMaxAcceptSteps;
+    w.u8(static_cast<uint8_t>(m));
+    for (size_t i = 0; i < m; ++i) {
+        w.u32(msg.steps[i].key);
+        w.u8(msg.steps[i].before);
+        w.u8(msg.steps[i].after);
+    }
+    return w.take();
+}
+
+std::optional<QuestAcceptMsg> decode_quest_accept(std::span<const uint8_t> bytes) {
+    Reader r(bytes);
+    QuestAcceptMsg m;
+    m.npc_key = r.u32();
+    const uint8_t n = r.u8();
+    if (n < 4 || n > kMaxAcceptAnswer) return std::nullopt;
+    m.answer = r.bytes(n);
+    const uint8_t k = r.u8();
+    if (k == 0 || k > kMaxAcceptSteps) return std::nullopt;
+    for (uint8_t i = 0; i < k; ++i) {
+        QuestAcceptMsg::Step s;
+        s.key = r.u32();
+        s.before = r.u8();
+        s.after = r.u8();
+        if (s.key == 0) return std::nullopt;
+        m.steps.push_back(s);
+    }
+    if (!r.ok() || !r.at_end() || m.npc_key == 0) return std::nullopt;
+    return m;
+}
+
 std::optional<StageBranchMsg> decode_stage_branch(std::span<const uint8_t> bytes) {
     Reader r(bytes);
     StageBranchMsg m;

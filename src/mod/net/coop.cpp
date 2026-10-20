@@ -19,6 +19,7 @@
 #include "mod/net/puppet_minimap.h"
 #include "mod/net/remote_puppet.h"
 #include "mod/net/puppet_motion.h"
+#include "mod/net/quest_share.h"
 #include "mod/net/stage_sync.h"
 #include "mod/net/time_sync.h"
 #include "mod/net/troc_sniffer.h"
@@ -164,6 +165,10 @@ void CoopLink::update(const std::optional<proto::Vec3>& local_pos, const proto::
         const bool echo = partner_.rfind("cdmp_peer", 0) == 0;
         for (const auto& m : stage_sync_tick(connected && g_ready, host, echo, local_in_world_, now_ms)) {
             session_.send_reliable(proto::RelKind::StageBranch, proto::encode_stage_branch(m), now_ms);
+        }
+        // After the stage branches: the meeting scene goes out before the accept.
+        for (const auto& m : quest_share_tick(connected && g_ready, host, echo, local_in_world_)) {
+            session_.send_reliable(proto::RelKind::QuestAccept, proto::encode_quest_accept(m), now_ms);
         }
     }
     if (!connected || !g_ready) return;
@@ -456,6 +461,7 @@ bool CoopLink::accepts(proto::RelKind kind) const {
         case proto::RelKind::EnemyRemove:
         case proto::RelKind::EnemyState:
         case proto::RelKind::StageBranch:  // only the host's game chooses for both
+        case proto::RelKind::QuestAccept:  // the guest's own accepts stay its own
             return !host;
         default:
             return true;
@@ -580,6 +586,8 @@ void CoopLink::on_reliable(const ReliableChannel::Message& msg, uint32_t now_ms)
         on_enemy_zone(msg.bytes, now_ms);
     } else if (msg.kind == proto::RelKind::StageBranch) {
         stage_sync_on_message(msg.bytes, now_ms);
+    } else if (msg.kind == proto::RelKind::QuestAccept) {
+        quest_share_on_message(msg.bytes);
     } else if (msg.kind == proto::RelKind::Despawn && msg.bytes.size() >= 4) {
         uint32_t gen = 0;
         std::memcpy(&gen, msg.bytes.data(), 4);

@@ -129,8 +129,8 @@ Recording load(const std::wstring& path) {
             r.missions[key] = unhex(buf);
         } else if (std::sscanf(line.c_str(), "Q %x %u %u", &key, &a, &b) == 3) {
             r.quests[key] = static_cast<uint8_t>(a);
-        } else if (std::sscanf(line.c_str(), "%x %u %u", &key, &a, &b) == 3 && key) {
-            r.branches.push_back({key, a, static_cast<uint16_t>(b)});
+        } else if (const auto br = parse_branch_line(line)) {
+            r.branches.push_back(*br);
         }
     }
     return r;

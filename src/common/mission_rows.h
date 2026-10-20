@@ -25,6 +25,7 @@ struct MissionChange {
     uint8_t kind = 0;
     uint8_t state = 0;
     bool added = false;  // first time this key is seen
+    uint8_t prev_kind = 0;  // the kind before this change (0 when added)
     std::array<uint8_t, 55> row{};
 };
 
@@ -47,13 +48,19 @@ public:
             const bool added = it == rows_.end();
             if (!added && it->second == row) continue;
             if (added && rows_.size() >= kMaxRows) continue;
+            const uint8_t prev = added ? 0 : it->second[4];
             rows_[key] = row;
-            out.push_back({key, row[4], row[5], added, row});
+            out.push_back({key, row[4], row[5], added, prev, row});
         }
         return out;
     }
 
     size_t size() const { return rows_.size(); }
+    // A row's kind, -1 when there is no such row.
+    int kind(uint32_t key) const {
+        const auto it = rows_.find(key);
+        return it == rows_.end() ? -1 : it->second[4];
+    }
     void clear() { rows_.clear(); }
 
 private:

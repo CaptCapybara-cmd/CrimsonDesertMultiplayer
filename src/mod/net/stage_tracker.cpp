@@ -22,6 +22,8 @@ constexpr uint16_t kOpUpdateMissionListAck = 3009;   // u8 scope | u32 player | 
 constexpr uint16_t kOpQuestDialogEndReq = 2342;      // u32 npc | u32 dialog key | u32 answer | ... (30 bytes)
 constexpr uint16_t kOpSetQuestDialogObstacleReq = 2621;  // u32 actor | u8 on
 constexpr size_t kMaxMissionChanges = 512;
+constexpr uint16_t kOpRemoveItemToInventoryAck = 2481;  // an item left our bags (a quest hand-in)
+constexpr size_t kMaxQuestEvents = 256;
 constexpr size_t kMaxDialogs = 64;
 constexpr uint32_t kNoBranch = 0xFFFFFFFF;
 constexpr size_t kMaxInstances = 4096;
@@ -37,6 +39,13 @@ std::vector<DialogMsg> g_dialogs;
 int g_dialogs_ours = 0;
 std::map<uint32_t, uint32_t> g_actor_static;   // runtime id -> static key
 std::map<uint32_t, uint32_t> g_actor_runtime;  // static key -> latest runtime id
+bool g_quest_events_on = false;
+std::vector<QuestEvent> g_quest_events;
+uint32_t g_own_player = 0;
+
+void quest_event(QuestEvent e) {
+    if (g_quest_events_on && g_quest_events.size() < kMaxQuestEvents) g_quest_events.push_back(std::move(e));
+}
 bool g_collect = false;
 // Our own injected requests pass the same capture: one per instance is ours.
 std::map<uint64_t, int> g_ours;
@@ -72,10 +81,18 @@ void stage_tracker_observe_s2c(const uint8_t* packet, size_t size) {
         }
         return;
     }
-    if (op == kOpUpdateMissionListAck) {
+    if (op == kOpRemoveItemToInventoryAck) {
         std::lock_guard lock(g_mutex);
+        quest_event({QuestEvent::Type::ItemRemoved, GetTickCount64(), {}, 0, {}});
+        return;
+    }
+    if (op == kOpUpdateMissionListAck) {
+        const uint64_t now = GetTickCount64();
+        std::lock_guard lock(g_mutex);
+        if (size >= 5 + 5) g_own_player = at<uint32_t>(p + 1);
         for (const auto& c : g_missions.observe({p, size - 5})) {
             if (g_mission_changes.size() < kMaxMissionChanges) g_mission_changes.push_back(c);
+            quest_event({QuestEvent::Type::Mission, now, {}, 0, c});
         }
     } else if (op == kOpUpdateQuestListAck && size >= 5 + 7) {
         // Only deltas (a = 0): the full list at load (a = 1) is not news.
@@ -109,8 +126,16 @@ void stage_tracker_observe_c2s(const uint8_t* packet, size_t size) {
         std::lock_guard lock(g_mutex);
         if (g_dialogs_ours > 0) {
             --g_dialogs_ours;
-        } else if (g_collect && g_dialogs.size() < kMaxDialogs) {
-            g_dialogs.push_back({at<uint16_t>(packet), {packet + 5, packet + size}, GetTickCount64()});
+        } else {
+            if (g_collect && g_dialogs.size() < kMaxDialogs) {
+                g_dialogs.push_back({at<uint16_t>(packet), {packet + 5, packet + size}, GetTickCount64()});
+            }
+            if (at<uint16_t>(packet) == kOpQuestDialogEndReq && size >= 5 + 4) {
+                const uint32_t npc = at<uint32_t>(packet + 5);
+                const auto it = g_actor_static.find(npc);
+                quest_event({QuestEvent::Type::Answer, GetTickCount64(), {packet + 5, packet + size},
+                             it == g_actor_static.end() ? 0 : it->second, {}});
+            }
         }
         return;
     }
@@ -227,6 +252,29 @@ bool stage_tracker_send_dialog(uint16_t op, const std::vector<uint8_t>& payload)
     std::lock_guard lock(g_mutex);
     if (g_dialogs_ours > 0) --g_dialogs_ours;
     return false;
+}
+
+void stage_tracker_quest_events(bool on) {
+    std::lock_guard lock(g_mutex);
+    g_quest_events_on = on;
+    if (!on) g_quest_events.clear();
+}
+
+std::vector<QuestEvent> stage_tracker_take_quest_events() {
+    std::lock_guard lock(g_mutex);
+    std::vector<QuestEvent> out;
+    out.swap(g_quest_events);
+    return out;
+}
+
+uint32_t stage_tracker_own_player() {
+    std::lock_guard lock(g_mutex);
+    return g_own_player;
+}
+
+int stage_tracker_mission_kind(uint32_t key) {
+    std::lock_guard lock(g_mutex);
+    return g_missions.kind(key);
 }
 
 uint32_t stage_tracker_actor_static(uint32_t runtime_id) {

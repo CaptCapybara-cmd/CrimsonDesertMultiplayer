@@ -37,16 +37,12 @@ uint32_t g_feed_ms = 0;
 uint32_t g_applied_ms = 0;
 
 std::vector<proto::StageBranchMsg> load_feed(const std::wstring& path) {
+    // Every recorded branch, in order: a scene runs through several (the queue chains them).
     std::vector<proto::StageBranchMsg> out;
-    std::map<uint32_t, bool> seen;
     std::ifstream in(path);
     std::string line;
     while (std::getline(in, line)) {
-        unsigned key = 0, branch = 0, flags = 0;
-        if (std::sscanf(line.c_str(), "%x %u %u", &key, &branch, &flags) == 3 && key && !seen[key]) {
-            seen[key] = true;
-            out.push_back({key, branch, static_cast<uint16_t>(flags)});
-        }
+        if (const auto b = parse_branch_line(line)) out.push_back(*b);
     }
     return out;
 }

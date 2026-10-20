@@ -8,6 +8,7 @@
 #include <tuple>
 #include <utility>
 #include <limits>
+#include <map>
 #include <vector>
 
 #include "common/byte_ring.h"
@@ -17,6 +18,7 @@
 #include "common/enemy_zone.h"
 #include "common/mission_rows.h"
 #include "common/move_thinner.h"
+#include "common/quest_accept.h"
 #include "common/stage_sync.h"
 #include "common/equip_state.h"
 #include "common/field_time.h"
@@ -1158,6 +1160,24 @@ std::vector<uint8_t> mission_list(std::initializer_list<std::tuple<uint32_t, uin
     return p;
 }
 
+void test_branch_lines() {
+    auto b = parse_branch_line("000F475E 6 0");
+    CHECK(b && b->key == 0xF475E && b->branch == 6 && b->flags == 0);
+    CHECK(parse_branch_line("000F4CB1 1 0\r") == std::nullopt || parse_branch_line("000F4CB1 1 0\r")->branch == 1);
+    // The other line kinds of the same file are not branches (a loose %x read "D" as key 0xD).
+    CHECK(!parse_branch_line("D 2621 0 010010A001"));
+    CHECK(!parse_branch_line("D 2342 41775 C10110B040440F000A00"));
+    CHECK(!parse_branch_line("N B01001C1 01C29010"));
+    CHECK(!parse_branch_line("S FFFFF7F8 2 5"));
+    CHECK(!parse_branch_line("Q 000F45A5 2 1"));
+    CHECK(!parse_branch_line("M FFFFF7F8 5 1 F8F7FFFF0501"));
+    CHECK(!parse_branch_line("00000000 1 0"));           // key 0
+    CHECK(!parse_branch_line("000F475E 4294967295 0"));  // "no branch"
+    CHECK(!parse_branch_line("000F475E 6 70000"));       // flags too big
+    CHECK(!parse_branch_line("000F475E 6 0 junk"));
+    CHECK(!parse_branch_line("F475E 6 0"));               // not 8 digits
+}
+
 void test_mission_rows() {
     MissionRows m;
     // The list as loaded: everything is new.
@@ -1172,11 +1192,134 @@ void test_mission_rows() {
     // A changed row, also when only a byte past the state changes.
     c = m.observe(mission_list({{0xF4AB4, 1, 2, 0}, {0xF461C, 1, 2, 7}}));
     CHECK(c.size() == 2 && !c[0].added && c[0].state == 2 && c[1].key == 0xF461C);
+    CHECK(c[0].prev_kind == 1 && m.kind(0xF4AB4) == 1 && m.kind(0xFFFFF7F8) == 5 && m.kind(0x1234) == -1);
     CHECK(c[1].row[40] == 7);  // the whole row travels: two requests in one slot differ only past the state
     // Malformed: ignored.
     auto bad = mission_list({{1, 1, 1, 0}});
     bad.pop_back();
     CHECK(m.observe(bad).empty() && m.observe(std::vector<uint8_t>{1, 2}).empty());
+}
+
+// The owner's accept of Renee's Request (capture 2026-10-20 12:42): QuestDialogEndReq to Raine
+// (runtime 0xB01001C1, static 0x01C29010), and the three rows it changed.
+proto::QuestAcceptMsg renee_accept() {
+    std::vector<uint8_t> answer{0xC1, 0x01, 0x10, 0xB0, 0x40, 0x44, 0x0F, 0x00, 0x0A, 0, 0, 0, 0, 0, 0, 0,
+                                0,    0,    0,    0,    1,    0,    0,    0,    0,    0, 0x73, 0xE1, 0xC5, 0xEA};
+    return {0x01C29010, answer, {{0xFFFFF7F8, 2, 5}, {0xFFFFF7F7, 0, 2}, {0xFFFFF7F6, 0, 2}}};
+}
+
+void test_quest_accept_message() {
+    const auto m = renee_accept();
+    const auto b = proto::encode_quest_accept(m);
+    CHECK(b.size() == 4 + 1 + 30 + 1 + 3 * 6);
+    const auto d = proto::decode_quest_accept(b);
+    CHECK(d && d->npc_key == m.npc_key && d->answer == m.answer && d->steps == m.steps);
+    // Every truncation and one byte too many are refused.
+    for (size_t n = 0; n < b.size(); ++n) CHECK(!proto::decode_quest_accept({b.data(), n}));
+    auto longer = b;
+    longer.push_back(0);
+    CHECK(!proto::decode_quest_accept(longer));
+    // Hostile counts and zero keys.
+    auto bad = b;
+    bad[4] = 3;  // answer shorter than an actor id
+    CHECK(!proto::decode_quest_accept(bad));
+    bad = b;
+    bad[4] = 65;
+    CHECK(!proto::decode_quest_accept(bad));
+    bad = b;
+    bad[4 + 1 + 30] = 0;  // no steps
+    CHECK(!proto::decode_quest_accept(bad));
+    bad = b;
+    bad[4 + 1 + 30] = 17;
+    CHECK(!proto::decode_quest_accept(bad));
+    bad = b;
+    std::memset(bad.data(), 0, 4);  // npc 0
+    CHECK(!proto::decode_quest_accept(bad));
+    bad = b;
+    std::memset(bad.data() + 4 + 1 + 30 + 1, 0, 4);  // step key 0
+    CHECK(!proto::decode_quest_accept(bad));
+}
+
+void test_accept_detector() {
+    const auto m = renee_accept();
+    AcceptDetector d;
+    // The accept: rows change, nothing leaves the bags.
+    d.on_answer(m.answer, 0x01C29010, 1000);
+    d.on_mission(0xFFFFF7F8, 2, 5, 1017);
+    d.on_mission(0xFFFFF7F7, 0, 2, 1017);
+    d.on_mission(0xFFFFF7F6, 0, 2, 1017);
+    d.on_mission(0xF461C, 2, 2, 1018);  // same kind: not a step
+    CHECK(!d.tick(1300));                // window not over
+    auto a = d.tick(1401);
+    CHECK(a && a->npc_key == 0x01C29010 && a->steps == m.steps && d.accepts() == 1);
+    CHECK(!d.tick(1500));  // once
+    // The hand-in (2026-10-20 15:15): rows change and items are removed: not shared.
+    d.on_answer(m.answer, 0x01C29010, 2000);
+    d.on_mission(0x0F4B06, 2, 5, 2018);
+    d.on_item_removed(2019);
+    CHECK(!d.tick(2401) && d.handins() == 1);
+    // An answer that changes nothing, and changes after the window, are not accepts.
+    d.on_answer(m.answer, 0x01C29010, 3000);
+    d.on_mission(0xFFFFF7F8, 2, 5, 3500);
+    CHECK(!d.tick(3500) && d.other() == 1);
+    // An NPC we could not name is not shared.
+    d.on_answer(m.answer, 0, 4000);
+    d.on_mission(0xFFFFF7F8, 2, 5, 4010);
+    CHECK(!d.tick(4401) && d.other() == 2);
+}
+
+void test_guest_accept_queue() {
+    const auto m = renee_accept();
+    std::map<uint32_t, int> rows{{0xFFFFF7F8, 2}};  // the guest's mission list at load
+    uint32_t npc = 0;
+    GuestAcceptQueue::World w;
+    w.npc_runtime = [&](uint32_t key) { return key == 0x01C29010 ? npc : 0u; };
+    w.mission_kind = [&](uint32_t key) {
+        const auto it = rows.find(key);
+        return it == rows.end() ? -1 : it->second;
+    };
+    GuestAcceptQueue q;
+    CHECK(q.push(m, 0));
+    // Raine not loaded here, or our own id unknown: wait.
+    CHECK(q.tick(w, 100).empty());
+    npc = 0xB01001C6;
+    CHECK(q.tick(w, 200).empty());
+    w.own_player = 0xA0100001;
+    // Ready: open (player, NPC), answer with OUR runtime id for Raine, close; one per gap.
+    std::vector<DialogSend> sent;
+    for (uint32_t t = 300; t < 2000; t += 50) {
+        for (auto& d : q.tick(w, t)) sent.push_back(d);
+    }
+    CHECK(sent.size() == 5 && q.counters().sent == 1);
+    uint32_t id = 0;
+    std::memcpy(&id, sent[2].payload.data(), 4);
+    CHECK(sent[2].op == 2342 && id == 0xB01001C6 && sent[2].payload.size() == 30 && sent[2].payload[8] == 0x0A);
+    std::memcpy(&id, sent[0].payload.data(), 4);
+    CHECK(sent[0].op == 2621 && id == 0xA0100001 && sent[0].payload[4] == 1);
+    std::memcpy(&id, sent[1].payload.data(), 4);
+    CHECK(id == 0xB01001C6 && sent[1].payload[4] == 1 && sent[3].payload[4] == 0 && sent[4].payload[4] == 0);
+    // The server did it: accepted.
+    rows = {{0xFFFFF7F8, 5}, {0xFFFFF7F7, 2}, {0xFFFFF7F6, 2}};
+    CHECK(q.tick(w, 2100).empty() && q.pending() == 0 && q.counters().accepted == 1);
+    // The same accept again (echo, or the guest did it alone): already there, nothing sent.
+    CHECK(q.push(m, 3000) && q.tick(w, 3100).empty() && q.counters().already == 1);
+    // Not in the host's "before" state (the guest is elsewhere in the story): wait, then give up.
+    rows = {{0xFFFFF7F8, 1}};
+    CHECK(q.push(m, 4000) && q.tick(w, 4100).empty() && q.pending() == 1);
+    CHECK(q.tick(w, 4000 + 10 * 60 * 1000 + 1).empty() && q.counters().expired == 1 && q.counters().sent == 1);
+    // Sent but the server did not do it: failed after verify_ms, never sent twice.
+    rows = {{0xFFFFF7F8, 2}};
+    CHECK(q.push(m, 700000));
+    sent.clear();
+    for (uint32_t t = 700000; t < 702000; t += 50) {
+        for (auto& d : q.tick(w, t)) sent.push_back(d);
+    }
+    CHECK(sent.size() == 5);
+    for (uint32_t t = 702000; t < 713000; t += 500) CHECK(q.tick(w, t).empty());
+    CHECK(q.counters().failed == 1 && q.counters().sent == 2 && q.pending() == 0);
+    // Bounded.
+    GuestAcceptQueue small(GuestAcceptQueue::Settings{600000, 10000, 200, 1});
+    CHECK(small.push(m, 0) && !small.push(m, 0) && small.counters().refused == 1);
 }
 
 void test_enemy_zone_message() {
@@ -1224,7 +1367,7 @@ void test_enemy_zone_message() {
     CHECK(!proto::decode_enemy_zone(many));
     CHECK(!proto::decode_enemy_zone({}));
     // The session hands kinds up to 9 (StageBranch) to the game; a newer kind is dropped.
-    static_assert(proto::kMaxRelKind == static_cast<uint8_t>(proto::RelKind::StageBranch));
+    static_assert(proto::kMaxRelKind == static_cast<uint8_t>(proto::RelKind::QuestAccept));
 }
 
 void test_enemy_zone_machine() {
@@ -1497,6 +1640,10 @@ int main() {
     test_stage_branch_message();
     test_stage_sync_queue();
     test_mission_rows();
+    test_branch_lines();
+    test_quest_accept_message();
+    test_accept_detector();
+    test_guest_accept_queue();
     test_enemy_zone_machine();
     if (g_failures == 0) std::printf("All tests passed\n");
     return g_failures == 0 ? 0 : 1;

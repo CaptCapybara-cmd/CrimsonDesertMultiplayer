@@ -20,8 +20,12 @@
 // Only branches the host's game really chose are ever sent: a made-up branch
 // number crashes the game.
 
+#include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <optional>
+#include <string_view>
 #include <deque>
 #include <iterator>
 #include <map>
@@ -30,6 +34,25 @@
 #include "common/protocol.h"
 
 namespace cdmp {
+
+// A branch line of cdmp_stage_record.txt: exactly "KKKKKKKK branch flags" (8 hex digits).
+// Other lines start with a letter ("D 2621 ...", "N ...", "M ...", "Q ...", "S ...") and a
+// loose "%x" reads "D" as key 0xD: a made-up branch, which can crash the game.
+inline std::optional<proto::StageBranchMsg> parse_branch_line(std::string_view line) {
+    if (line.size() < 12 || line[8] != ' ') return std::nullopt;
+    for (size_t i = 0; i < 8; ++i) {
+        if (!std::isxdigit(static_cast<unsigned char>(line[i]))) return std::nullopt;
+    }
+    char buf[64];
+    const size_t n = line.size() < sizeof buf - 1 ? line.size() : sizeof buf - 1;
+    line.copy(buf, n);
+    buf[n] = 0;
+    unsigned key = 0, branch = 0, flags = 0;
+    char extra = 0;
+    if (std::sscanf(buf, "%8x %u %u %c", &key, &branch, &flags, &extra) != 3) return std::nullopt;
+    if (!key || branch == 0xFFFFFFFF || flags > 0xFFFF) return std::nullopt;
+    return proto::StageBranchMsg{key, branch, static_cast<uint16_t>(flags)};
+}
 
 struct LocalStage {
     uint64_t instance = 0;

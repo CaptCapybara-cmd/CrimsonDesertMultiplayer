@@ -148,6 +148,8 @@ Config load_config(const std::wstring& ini_path) {
     c.coop_stage_sync = read_uint(ini_path, L"coop", L"stage_sync", 0) != 0;
     c.coop_move_thin = read_uint(ini_path, L"coop", L"move_thin", 1) != 0;
     c.dev_stage_sync_feed = read_uint(ini_path, L"dev", L"stage_sync_feed", 0) != 0;
+    c.coop_quest_share = read_uint(ini_path, L"coop", L"quest_share", 0) != 0;
+    c.dev_quest_share_feed = read_uint(ini_path, L"dev", L"quest_share_feed", 0) != 0;
     c.dev_stage_replay = read_uint(ini_path, L"dev", L"stage_replay", 0) != 0;
     c.dev_stage_record_stay_s = read_uint(ini_path, L"dev", L"stage_record_stay_s", 240);
     c.dev_stage_replay_rng = read_uint(ini_path, L"dev", L"stage_replay_rng", 0);
