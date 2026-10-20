@@ -775,6 +775,7 @@ DWORD WINAPI worker(LPVOID) {
             net::puppet_minimap_set_enemy_offset(cfg.coop_enemy_minimap_icon);
             net::puppet_want_rope_bend(cfg.dev_rope_bend);
             net::time_sync_set_mode(static_cast<net::TimeSyncMode>(cfg.coop_time_sync));
+            net::puppet_set_move_thinning(cfg.coop_move_thin);
             net::stage_sync_configure({cfg.coop_stage_sync,
                                        cfg.coop_stage_sync && cfg.dev_stage_sync_feed ? dir + L"\\cdmp_stage_record.txt"
                                                                                       : std::wstring(),
@@ -803,12 +804,20 @@ DWORD WINAPI worker(LPVOID) {
         if (in_game && cfg.dev_test_autoload) {
             test_input_install();
             static uint16_t key = cfg.dev_test_autoload_key;
-            static bool quit =
-                cfg.dev_test_autoquit && !cfg.dev_stage_force_test && !cfg.dev_stage_record && !cfg.dev_stage_replay &&
-                !(cfg.coop_stage_sync && cfg.dev_stage_sync_feed);
+            static bool quit = cfg.dev_test_autoquit && !cfg.dev_stage_force_test && !cfg.dev_stage_record &&
+                               !cfg.dev_stage_replay && !(cfg.coop_stage_sync && cfg.dev_stage_sync_feed) &&
+                               !cfg.dev_test_walk_s;
             CloseHandle(CreateThread(
                 nullptr, 0, [](LPVOID) -> DWORD { test_autoload_loop(g_stop, key, 4000, 15, quit); return 0; },
                 nullptr, 0, nullptr));
+        }
+        if (in_game && cfg.dev_test_walk_s) {
+            if (!cfg.dev_test_autoload) test_input_install();
+            static uint32_t walk_s = cfg.dev_test_walk_s;
+            static bool walk_quit = cfg.dev_test_autoquit;
+            CloseHandle(CreateThread(
+                nullptr, 0, [](LPVOID) -> DWORD { test_walk_loop(g_stop, walk_s, walk_quit); return 0; }, nullptr, 0,
+                nullptr));
         }
 
         if (cfg.startup_delay_ms > 0 && stop_requested(cfg.startup_delay_ms)) return 0;

@@ -13,6 +13,7 @@
 #include "common/clock_mapper.h"
 #include "common/enemy_load.h"
 #include "common/enemy_zone.h"
+#include "common/move_thinner.h"
 #include "common/stage_sync.h"
 #include "common/equip_state.h"
 #include "common/field_time.h"
@@ -1038,6 +1039,32 @@ void test_enemy_zone_predicate() {
     CHECK(flat_distance({0, 0, 0}, {3, 100, 4}) == 5.0f);
 }
 
+void test_move_thinner() {
+    using V = MoveThinner::Verdict;
+    // 83 Hz for 2 s (a Move every 12 ms) comes out at no more than ~45 Hz.
+    MoveThinner t;
+    uint64_t kept = 0;
+    for (uint64_t i = 0; i < 166; ++i) kept += t.offer(1000 + i * 12, 0, 5000 + i * 12) == V::Keep;  // ends on a held one
+    CHECK(kept >= 70 && kept <= 90);
+    CHECK(t.kept() == kept && t.holding());  // the last one is held...
+    CHECK(!t.release_due(5000 + 165 * 12 + 59));
+    CHECK(t.release_due(5000 + 165 * 12 + 60));  // ...and goes in after 60 ms of silence
+    CHECK(!t.holding() && t.released() == 1 && !t.release_due(999999));
+    // Kept: the first, the first after a silence, a parent change, one out of order.
+    MoveThinner u;
+    CHECK(u.offer(100, 0, 0) == V::Keep);
+    CHECK(u.offer(110, 0, 10) == V::Hold);
+    CHECK(u.offer(400, 0, 300) == V::Keep);              // 290 ms gap
+    CHECK(u.offer(405, 0xB010F002, 305) == V::Keep);     // mounted the horse
+    CHECK(u.offer(410, 0xB010F002, 310) == V::Hold);
+    CHECK(u.offer(300, 0xB010F002, 315) == V::Keep);     // older than the last kept: not ours to judge
+    CHECK(u.offer(427, 0xB010F002, 320) == V::Keep);     // 22 ms after the last kept (405)
+    // A held Move replaced by a newer one is dropped for good.
+    MoveThinner v;
+    CHECK(v.offer(0, 0, 0) == V::Keep && v.offer(10, 0, 10) == V::Hold && v.offer(15, 0, 15) == V::Hold);
+    CHECK(v.offer(30, 0, 30) == V::Keep && v.dropped() == 2 && !v.holding());
+}
+
 void test_stage_branch_message() {
     proto::StageBranchMsg m{0xF4CB1, 1, 0};
     auto bytes = proto::encode_stage_branch(m);
@@ -1407,6 +1434,7 @@ int main() {
     test_session_host_guest();
     test_enemy_zone_predicate();
     test_enemy_zone_message();
+    test_move_thinner();
     test_stage_branch_message();
     test_stage_sync_queue();
     test_enemy_zone_machine();

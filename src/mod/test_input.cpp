@@ -5,11 +5,14 @@
 #include <safetyhook.hpp>
 
 #include <atomic>
+#include <cmath>
 #include <cstring>
 #include <vector>
 
 #include "mod/log.h"
 #include "mod/net/local_capture.h"
+#include "mod/game/actor_lookup.h"
+#include "mod/net/puppet_motion.h"
 #include "mod/net/troc_sniffer.h"
 
 namespace cdmp {
@@ -29,6 +32,8 @@ SafetyHookInline g_get_async_key_state;
 SafetyHookInline g_get_foreground_window;
 SafetyHookInline g_get_focus;
 SafetyHookInline g_register_raw_input;
+SafetyHookInline g_clip_cursor;
+SafetyHookInline g_set_cursor_pos;
 
 std::atomic<HWND> g_raw_target{nullptr};  // hwndTarget the game registered for its keyboard
 std::atomic<HWND> g_game_window{nullptr};
@@ -98,6 +103,17 @@ HWND WINAPI hook_get_focus() {
     return g_get_focus.stdcall<HWND>();
 }
 
+// While we fake focus the game would grab or move the owner's mouse (playbook lesson 23): not then.
+BOOL WINAPI hook_clip_cursor(const RECT* r) {
+    if (g_fake_focus.load()) return TRUE;
+    return g_clip_cursor.stdcall<BOOL>(r);
+}
+
+BOOL WINAPI hook_set_cursor_pos(int x, int y) {
+    if (g_fake_focus.load()) return TRUE;
+    return g_set_cursor_pos.stdcall<BOOL>(x, y);
+}
+
 BOOL WINAPI hook_register_raw_input(PCRAWINPUTDEVICE devices, UINT count, UINT size) {
     for (UINT i = 0; devices && i < count; ++i) {
         if (devices[i].usUsagePage == 1 && devices[i].usUsage == 6 && devices[i].hwndTarget) {  // keyboard
@@ -152,6 +168,8 @@ bool test_input_install() {
     ok = hook(g_get_foreground_window, user32, "GetForegroundWindow", &hook_get_foreground_window) && ok;
     ok = hook(g_get_focus, user32, "GetFocus", &hook_get_focus) && ok;
     ok = hook(g_register_raw_input, user32, "RegisterRawInputDevices", &hook_register_raw_input) && ok;
+    ok = hook(g_clip_cursor, user32, "ClipCursor", &hook_clip_cursor) && ok;
+    ok = hook(g_set_cursor_pos, user32, "SetCursorPos", &hook_set_cursor_pos) && ok;
     UINT count = 0;
     if (GetRawInputDeviceList(nullptr, &count, sizeof(RAWINPUTDEVICELIST)) == 0 && count) {
         std::vector<RAWINPUTDEVICELIST> list(count);
@@ -192,6 +210,65 @@ bool test_input_press(uint16_t vk, uint32_t hold_ms) {
     PostMessageW(target, WM_INPUT, RIM_INPUT, reinterpret_cast<LPARAM>(marker(vk, false)));
     PostMessageW(game, WM_KEYUP, vk, up_lp);
     return true;
+}
+
+bool test_input_hold(void* stop, uint16_t vk, uint32_t hold_ms) {
+    HWND game = g_game_window.load();
+    if (!game) game = find_game_window();
+    if (!game) return false;
+    g_game_window.store(game);
+    HWND target = g_raw_target.load();
+    if (!target) target = game;
+    const UINT scan = MapVirtualKeyW(vk, MAPVK_VK_TO_VSC);
+    const LPARAM down_lp = 1 | (static_cast<LPARAM>(scan) << 16);
+    g_press_vk.store(vk);
+    g_held_vk.store(vk);
+    // Like a real held key: a make event now, then auto-repeat about 30 times a second.
+    const uint64_t start = GetTickCount64();
+    bool first = true;
+    while (GetTickCount64() - start < hold_ms) {
+        PostMessageW(target, WM_INPUT, RIM_INPUT, reinterpret_cast<LPARAM>(marker(vk, true)));
+        PostMessageW(game, WM_KEYDOWN, vk, first ? down_lp : down_lp | (1LL << 30));
+        first = false;
+        if (WaitForSingleObject(static_cast<HANDLE>(stop), 33) != WAIT_TIMEOUT) break;
+    }
+    g_held_vk.store(0);
+    PostMessageW(target, WM_INPUT, RIM_INPUT, reinterpret_cast<LPARAM>(marker(vk, false)));
+    PostMessageW(game, WM_KEYUP, vk, down_lp | (1LL << 30) | (1LL << 31));
+    return true;
+}
+
+void test_walk_loop(void* stop, uint32_t walk_s, bool quit_after) {
+    const HANDLE h = static_cast<HANDLE>(stop);
+    while (!in_world()) {
+        if (WaitForSingleObject(h, 500) != WAIT_TIMEOUT) return;
+    }
+    // Let the other player's copy appear first.
+    if (WaitForSingleObject(h, 15000) != WAIT_TIMEOUT) return;
+    const auto me = net::capture_own_player_key();
+    const auto from = game::actor_world_position(me);
+    log::info("TestInput: walking for {} s (W 4 s, pause, S 4 s, pause, ...)", walk_s);
+    net::puppet_motion_window(true);
+    g_fake_focus.store(true);
+    const uint64_t start = GetTickCount64();
+    bool forward = true;
+    float walked = 0.0f;
+    auto last = from;
+    while (GetTickCount64() - start < walk_s * 1000ull) {
+        if (!test_input_hold(stop, forward ? 'W' : 'S', 4000)) break;
+        forward = !forward;
+        if (WaitForSingleObject(h, 1000) != WAIT_TIMEOUT) break;
+        if (const auto p = game::actor_world_position(me); p && last) {
+            walked += std::hypot(p->x - last->x, p->z - last->z);
+            last = p;
+        }
+    }
+    g_fake_focus.store(false);
+    net::puppet_motion_window(false);
+    log::info("TestInput: walk done: our player covered {:.1f} m (GetAsyncKeyState asked for our key {} times)", walked,
+              g_async_calls_key.load());
+    net::puppet_motion_report(walked);
+    if (quit_after && WaitForSingleObject(h, 5000) == WAIT_TIMEOUT) test_quit_game(20000);
 }
 
 void test_autoload_loop(void* stop, uint16_t vk, uint32_t every_ms, int max_presses, bool quit_after) {

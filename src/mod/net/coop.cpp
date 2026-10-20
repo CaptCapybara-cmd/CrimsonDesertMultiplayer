@@ -18,6 +18,7 @@
 #include "mod/net/player_hits.h"
 #include "mod/net/puppet_minimap.h"
 #include "mod/net/remote_puppet.h"
+#include "mod/net/puppet_motion.h"
 #include "mod/net/stage_sync.h"
 #include "mod/net/time_sync.h"
 #include "mod/net/troc_sniffer.h"
@@ -156,6 +157,8 @@ void CoopLink::update(const std::optional<proto::Vec3>& local_pos, const proto::
     const auto work_from = std::chrono::steady_clock::now();
     enemy_set_linked(connected && g_ready);
     update_enemy_zone(connected && g_ready, local_pos, now_ms);
+    puppet_flush_held();
+    puppet_motion_sample();
     {
         const bool host = session_.role() == ClientSession::Role::Responder;
         const bool echo = partner_.rfind("cdmp_peer", 0) == 0;

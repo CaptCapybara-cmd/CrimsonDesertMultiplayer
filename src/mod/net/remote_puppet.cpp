@@ -29,6 +29,7 @@
 #include "mod/net/enemy_relay.h"
 #include "mod/net/horse_diag.h"
 #include "common/keys.h"
+#include "common/move_thinner.h"
 #include "mod/net/local_capture.h"
 
 namespace cdmp::net {
@@ -648,6 +649,16 @@ bool hook_tree_here(Bytes& body) {
 Bytes g_last_move;              // last Move (Req format, puppet key)
 uint64_t g_last_move_ms = 0;    // steady_ms when it was processed
 uint64_t g_last_move_ts = 0;    // its timestamp (sender clock)
+// Player Moves thinned to ~40 Hz (move_thinner.h); co-op thread only.
+bool g_thin_enabled = true;
+MoveThinner g_thinner;
+struct HeldMove {
+    proto::GameEvent ev;
+    int64_t ts_shift_ms;
+    uint64_t delay_ms;
+};
+std::optional<HeldMove> g_held_move;
+bool g_releasing_held = false;
 float g_last_move_pos[3] = {NAN, NAN, NAN};
 constexpr uint64_t kMoveSilenceMs = 150;  // real MoveActorReqs come every ~25 ms
 
@@ -1598,6 +1609,17 @@ void puppet_event(const proto::GameEvent& ev, int64_t ts_shift_ms, uint64_t dela
         return;
     }
 
+    // Thinning (the player's Moves only; never the horse's or any action).
+    if (ev.kind == proto::EventKind::Move && payload.size() == 514 && g_thin_enabled && !g_releasing_held) {
+        uint64_t ts = 0;
+        std::memcpy(&ts, payload.data() + 0xD5, 8);
+        if (g_thinner.offer(ts, u32_at(payload, 0x8C), now) == MoveThinner::Verdict::Hold) {
+            g_held_move = HeldMove{ev, ts_shift_ms, delay_ms};
+            return;
+        }
+        g_held_move.reset();
+    }
+
     uint16_t ack_op = 0;
     std::optional<Bytes> ack;
     switch (ev.kind) {
@@ -1912,6 +1934,31 @@ std::string rope_slot_text(uint32_t key) {
 }
 
 }  // namespace
+
+void puppet_set_move_thinning(bool on) {
+    g_thin_enabled = on;
+    log::info("Puppet: the other player's Moves {}", on ? "thinned to ~40 Hz (held ones go in after 60 ms of silence)"
+                                                       : "NOT thinned ([coop] move_thin=0)");
+}
+
+void puppet_flush_held() {
+    const uint64_t now = steady_ms();
+    if (g_held_move && g_thinner.release_due(now)) {
+        HeldMove h = std::move(*g_held_move);
+        g_held_move.reset();
+        g_releasing_held = true;
+        puppet_event(h.ev, h.ts_shift_ms, h.delay_ms);
+        g_releasing_held = false;
+    }
+    static uint64_t stats_at = 0;
+    static uint64_t last_kept = 0;
+    if (now - stats_at >= 10000 && g_thinner.kept() != last_kept) {
+        stats_at = now;
+        last_kept = g_thinner.kept();
+        log::info("Puppet: Moves kept {}, dropped as too close {}, held and sent after a silence {}", g_thinner.kept(),
+                  g_thinner.dropped(), g_thinner.released());
+    }
+}
 
 void puppet_tick() {
     horse_diag_tick();

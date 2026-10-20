@@ -77,6 +77,11 @@ void puppet_event(const proto::GameEvent& ev, int64_t ts_shift_ms, uint64_t dela
 
 // Event thread, regularly: logs.
 void puppet_tick();
+// Co-op thread: thin the other player's Moves to ~40 Hz (move_thinner.h); on by default.
+void puppet_set_move_thinning(bool on);
+// Co-op thread, every tick: a thinned-out Move held at the end of a run of
+// movement goes in after 60 ms of silence.
+void puppet_flush_held();
 
 // NetworkThread, inside the OnRecvPacket hook: next packet that is due.
 // Never blocks (gives up if the queue is busy).

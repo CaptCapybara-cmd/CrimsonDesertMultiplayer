@@ -108,6 +108,7 @@ add_library(cdmp_mod SHARED
     src/mod/net/stage_tracker.cpp
     src/mod/net/stage_sync.cpp
     src/mod/test_input.cpp
+    src/mod/net/puppet_motion.cpp
     src/mod/net/guest_hits.cpp
     src/mod/net/learnt_store.cpp
     src/mod/net/loot_twin.cpp

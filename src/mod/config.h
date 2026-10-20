@@ -55,10 +55,12 @@ struct Config {
     bool dev_test_autoload = false;
     uint16_t dev_test_autoload_key = 0x45;  // 'E', the game's confirm key on the title and menus
     bool dev_test_autoquit = false;
+    uint32_t dev_test_walk_s = 0;  // walk test (test_input.h): seconds of walking, 0 = off
     // Record the game's own stage branches / replay them by static key (stage_replay.h); replay writes to the game.
     bool dev_stage_record = false;
     // Quest stage sync (stage_sync.h), experimental; the feed is its one-PC test through cdmp_peer.
     bool coop_stage_sync = false;
+    bool coop_move_thin = true;  // thin the other player's Moves to ~40 Hz (move_thinner.h)
     bool dev_stage_sync_feed = false;
     bool dev_stage_replay = false;
     uint32_t dev_stage_record_stay_s = 240;
