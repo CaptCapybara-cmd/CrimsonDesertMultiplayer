@@ -815,8 +815,9 @@ DWORD WINAPI worker(LPVOID) {
             if (!cfg.dev_test_autoload) test_input_install();
             static uint32_t walk_s = cfg.dev_test_walk_s;
             static bool walk_quit = cfg.dev_test_autoquit;
+            static bool walk_run = cfg.dev_test_walk_run;
             CloseHandle(CreateThread(
-                nullptr, 0, [](LPVOID) -> DWORD { test_walk_loop(g_stop, walk_s, walk_quit); return 0; }, nullptr, 0,
+                nullptr, 0, [](LPVOID) -> DWORD { test_walk_loop(g_stop, walk_s, walk_run, walk_quit); return 0; }, nullptr, 0,
                 nullptr));
         }
 

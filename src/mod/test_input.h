@@ -22,11 +22,13 @@ bool test_input_press(uint16_t vk, uint32_t hold_ms = 120);
 // With `quit_after` (autoload check without a stage test), logs RESULT and closes the game once in the world.
 void test_autoload_loop(void* stop, uint16_t vk, uint32_t every_ms, int max_presses, bool quit_after);
 // Holds a key down (with auto-repeat) for hold_ms on the game window.
-bool test_input_hold(void* stop, uint16_t vk, uint32_t hold_ms);
+// `modifier_vk` (e.g. VK_SHIFT) is pressed first and released last.
+bool test_input_hold(void* stop, uint16_t vk, uint32_t hold_ms, uint16_t modifier_vk = 0);
 // Own thread ([dev] test_walk_s): once in the world, walks back and forth
 // (W 4 s, S 4 s) for walk_s seconds, then logs the other player's copy's
 // motion RESULT (puppet_motion.h) and, with quit_after, closes the game.
-void test_walk_loop(void* stop, uint32_t walk_s, bool quit_after);
+// With `run`, Shift is held too ([dev] test_walk_run).
+void test_walk_loop(void* stop, uint32_t walk_s, bool run, bool quit_after);
 // Ends the game without saving: WM_CLOSE to the game window, then a hard exit
 // after `grace_ms` if it is still running.
 void test_quit_game(uint32_t grace_ms);

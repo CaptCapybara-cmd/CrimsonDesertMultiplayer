@@ -143,6 +143,7 @@ Config load_config(const std::wstring& ini_path) {
     c.dev_test_autoload_key = static_cast<uint16_t>(read_uint(ini_path, L"dev", L"test_autoload_key", 0x45));
     c.dev_test_autoquit = read_uint(ini_path, L"dev", L"test_autoquit", 0) != 0;
     c.dev_test_walk_s = read_uint(ini_path, L"dev", L"test_walk_s", 0);
+    c.dev_test_walk_run = read_uint(ini_path, L"dev", L"test_walk_run", 0) != 0;
     c.dev_stage_record = read_uint(ini_path, L"dev", L"stage_record", 0) != 0;
     c.coop_stage_sync = read_uint(ini_path, L"coop", L"stage_sync", 0) != 0;
     c.coop_move_thin = read_uint(ini_path, L"coop", L"move_thin", 1) != 0;

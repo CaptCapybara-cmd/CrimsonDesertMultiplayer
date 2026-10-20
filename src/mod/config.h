@@ -55,6 +55,7 @@ struct Config {
     bool dev_test_autoload = false;
     uint16_t dev_test_autoload_key = 0x45;  // 'E', the game's confirm key on the title and menus
     bool dev_test_autoquit = false;
+    bool dev_test_walk_run = false;  // the walk test holds Shift (run)
     uint32_t dev_test_walk_s = 0;  // walk test (test_input.h): seconds of walking, 0 = off
     // Record the game's own stage branches / replay them by static key (stage_replay.h); replay writes to the game.
     bool dev_stage_record = false;

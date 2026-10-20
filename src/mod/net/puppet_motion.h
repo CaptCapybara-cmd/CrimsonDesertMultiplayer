@@ -3,7 +3,7 @@
 // unattended walk test (test_input.h, [dev] test_walk_s): its position is read
 // from the game about every 20 ms while a window is open, and two failures are
 // counted:
-//   jump             a step faster than 15 m/s (nobody runs that fast);
+//   jump             a step longer than 0.75 m and faster than 15 m/s;
 //   stall then jump  the copy stood still >= 150 ms, then moved faster than
 //                    10 m/s: the client's buffer overflowed and caught up
 //                    (cdmp-puppet-findings.md, saltos-copia-anfitrion.md S4).

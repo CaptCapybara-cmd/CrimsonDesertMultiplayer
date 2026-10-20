@@ -212,7 +212,7 @@ bool test_input_press(uint16_t vk, uint32_t hold_ms) {
     return true;
 }
 
-bool test_input_hold(void* stop, uint16_t vk, uint32_t hold_ms) {
+bool test_input_hold(void* stop, uint16_t vk, uint32_t hold_ms, uint16_t modifier_vk) {
     HWND game = g_game_window.load();
     if (!game) game = find_game_window();
     if (!game) return false;
@@ -221,6 +221,11 @@ bool test_input_hold(void* stop, uint16_t vk, uint32_t hold_ms) {
     if (!target) target = game;
     const UINT scan = MapVirtualKeyW(vk, MAPVK_VK_TO_VSC);
     const LPARAM down_lp = 1 | (static_cast<LPARAM>(scan) << 16);
+    const LPARAM mod_lp = 1 | (static_cast<LPARAM>(MapVirtualKeyW(modifier_vk, MAPVK_VK_TO_VSC)) << 16);
+    if (modifier_vk) {  // pressed first and held under the key, like Shift+W
+        PostMessageW(target, WM_INPUT, RIM_INPUT, reinterpret_cast<LPARAM>(marker(modifier_vk, true)));
+        PostMessageW(game, WM_KEYDOWN, modifier_vk, mod_lp);
+    }
     g_press_vk.store(vk);
     g_held_vk.store(vk);
     // Like a real held key: a make event now, then auto-repeat about 30 times a second.
@@ -235,10 +240,14 @@ bool test_input_hold(void* stop, uint16_t vk, uint32_t hold_ms) {
     g_held_vk.store(0);
     PostMessageW(target, WM_INPUT, RIM_INPUT, reinterpret_cast<LPARAM>(marker(vk, false)));
     PostMessageW(game, WM_KEYUP, vk, down_lp | (1LL << 30) | (1LL << 31));
+    if (modifier_vk) {
+        PostMessageW(target, WM_INPUT, RIM_INPUT, reinterpret_cast<LPARAM>(marker(modifier_vk, false)));
+        PostMessageW(game, WM_KEYUP, modifier_vk, mod_lp | (1LL << 30) | (1LL << 31));
+    }
     return true;
 }
 
-void test_walk_loop(void* stop, uint32_t walk_s, bool quit_after) {
+void test_walk_loop(void* stop, uint32_t walk_s, bool run, bool quit_after) {
     const HANDLE h = static_cast<HANDLE>(stop);
     while (!in_world()) {
         if (WaitForSingleObject(h, 500) != WAIT_TIMEOUT) return;
@@ -247,7 +256,7 @@ void test_walk_loop(void* stop, uint32_t walk_s, bool quit_after) {
     if (WaitForSingleObject(h, 15000) != WAIT_TIMEOUT) return;
     const auto me = net::capture_own_player_key();
     const auto from = game::actor_world_position(me);
-    log::info("TestInput: walking for {} s (W 4 s, pause, S 4 s, pause, ...)", walk_s);
+    log::info("TestInput: {} for {} s (W 4 s, pause, S 4 s, pause, ...)", run ? "running (Shift held)" : "walking", walk_s);
     net::puppet_motion_window(true);
     g_fake_focus.store(true);
     const uint64_t start = GetTickCount64();
@@ -255,7 +264,7 @@ void test_walk_loop(void* stop, uint32_t walk_s, bool quit_after) {
     float walked = 0.0f;
     auto last = from;
     while (GetTickCount64() - start < walk_s * 1000ull) {
-        if (!test_input_hold(stop, forward ? 'W' : 'S', 4000)) break;
+        if (!test_input_hold(stop, forward ? 'W' : 'S', 4000, run ? VK_SHIFT : 0)) break;
         forward = !forward;
         if (WaitForSingleObject(h, 1000) != WAIT_TIMEOUT) break;
         if (const auto p = game::actor_world_position(me); p && last) {
