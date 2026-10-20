@@ -1,4 +1,7 @@
 #pragma once
+// CORRECTION (NOTES.md 2026-10-20 15:15): what this calls a "template" is the game-clock
+// time of the accept, not a request variant; there is no variant to force. Kept as a
+// memory/hardware-watch diagnostic; do not use mode 3 in play.
 // Dev diagnostic: where does the local server keep a mission slot, and what code
 // writes a "request" quest's template into it at the accept (NOTES.md 2026-10-20)?
 // Runs at QuestDialogEndReq's handler entry (quest_rng.h hook, server thread).

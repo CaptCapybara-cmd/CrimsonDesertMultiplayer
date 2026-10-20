@@ -1100,12 +1100,16 @@ void test_stage_sync_queue() {
     // The server answered: done, counted as applied.
     local[0] = {0x164, 0xF4CB1, 1, 0};
     CHECK(q.tick(local, 7100).empty() && q.pending() == 0 && q.counters().applied == 1);
-    // Later branches of one stage wait for the earlier one; a stage that went another way is not touched.
+    // Later branches of one stage wait for the earlier one, then follow it on the same instance;
+    // a stage that went another way is not touched.
     CHECK(q.push({0xF4CB5, 0, 0}, 8000) && q.push({0xF4CB5, 1, 0}, 8000));
     a = q.tick(local, 8100);
     CHECK(a.size() == 1 && a[0].instance == 0x165 && a[0].branch == 0);
     local[1] = {0x165, 0xF4CB5, 1, 0};
-    CHECK(q.tick(local, 8200).empty() && q.pending() == 1);  // branch 1: stage not waiting, held
+    a = q.tick(local, 8200);  // 0 done here: 1 follows on the same instance
+    CHECK(a.size() == 1 && a[0].instance == 0x165 && a[0].branch == 1 && q.pending() == 1);
+    local[1] = {0x165, 0xF4CB5, 1, 7};  // the guest's own game took it elsewhere
+    CHECK(q.tick(local, 8300).empty() && q.pending() == 1);
     CHECK(q.tick(local, 8200 + 120001).empty() && q.pending() == 0 && q.counters().expired == 1);
     // The guest's game got there by itself: dropped without sending.
     CHECK(q.push({0xF4880, 0, 0}, 9000));
@@ -1114,6 +1118,24 @@ void test_stage_sync_queue() {
     CHECK(q.push({0xF4893, 0, 0}, 9150));
     CHECK(q.tick({{0x163, 0xF4893, 0, kNone, true}}, 9160).empty());
     CHECK(q.tick({{0x163, 0xF4893, 1, 0}}, 9170).empty() && q.counters().reached_alone == 2);
+    // A scene: the host's next branch goes to the instance sitting on the host's previous one.
+    CHECK(q.push({0xF475E, 6, 0}, 9210) && q.push({0xF475E, 0, 0}, 9210) && q.push({0xF475E, 3, 0}, 9210));
+    a = q.tick({{0x1A1, 0xF475E, 0, kNone}}, 9220);
+    CHECK(a.size() == 1 && a[0].instance == 0x1A1 && a[0].branch == 6);
+    a = q.tick({{0x1A1, 0xF475E, 1, 6}}, 9230);  // 6 done: 0 goes to the same instance
+    CHECK(a.size() == 1 && a[0].instance == 0x1A1 && a[0].branch == 0);
+    CHECK(q.tick({{0x1A1, 0xF475E, 1, 6, true}}, 9240).empty());  // busy: not touched
+    a = q.tick({{0x1A1, 0xF475E, 1, 0}}, 9250);
+    CHECK(a.size() == 1 && a[0].branch == 3);
+    // An instance on some other branch is not chained to.
+    CHECK(q.tick({{0x1A1, 0xF475E, 1, 9}}, 9260).empty() && q.pending() == 1);
+    CHECK(q.tick({{0x1A1, 0xF475E, 1, 3}}, 9270).empty() && q.pending() == 0);
+    // A scene's last branch can leave the stage idle (state 0) on it: done once we sent it.
+    const uint32_t applied_before = q.counters().applied;
+    CHECK(q.push({0xF475E, 1, 0}, 9280));
+    a = q.tick({{0x1A1, 0xF475E, 7, 3}}, 9290);
+    CHECK(a.size() == 1 && a[0].branch == 1);
+    CHECK(q.tick({{0x1A1, 0xF475E, 0, 1}}, 9300).empty() && q.pending() == 0 && q.counters().applied == applied_before + 1);
     // A stage whose key is not known yet is never sent anything.
     CHECK(q.push({0xF4880, 0, 0}, 9200));
     CHECK(q.tick({{0x21, 0, 0, kNone}}, 9300).empty());

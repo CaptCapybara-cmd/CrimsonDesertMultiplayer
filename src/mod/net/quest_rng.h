@@ -1,4 +1,6 @@
 #pragma once
+// CORRECTION (NOTES.md 2026-10-20 15:15): the "variant" was the accept time, so the rand
+// was never involved. Kept as a diagnostic.
 // The local server's random draws for quest dialog answers, build 2976 (NOTES.md
 // 2026-10-20). The server's rand is per thread (MSVC style, x*0x343FD+0x269EC3,
 // state at TLS+0x4AD8, seeded with GetCurrentThreadId; getter exe+0x1378F10). The

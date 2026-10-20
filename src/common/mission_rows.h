@@ -17,9 +17,9 @@
 
 namespace cdmp {
 
-// The keys are slots, not quests: the same slot (0xFFFFF7F8) held two different
-// requests on two loads of one save; the request's template key is in the row
-// (+14 or +6). Compare whole rows, not key and state.
+// Rows hold the game-clock time of the accept (+14 in a kind-5 row, else +6); it
+// differs between sessions (it was first misread as a "request variant", NOTES.md
+// 2026-10-20 15:15).
 struct MissionChange {
     uint32_t key = 0;
     uint8_t kind = 0;

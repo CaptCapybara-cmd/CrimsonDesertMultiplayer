@@ -12,7 +12,7 @@ namespace cdmp::net {
 namespace {
 
 constexpr uint16_t kOpStageBranchStateReq = 2436;  // u64 instance | u32 branch | u16 flags
-constexpr uint16_t kOpStageBranchStateAck = 2981;  // hdr5 | u64 instance | u32 state | u32 branch | u32 hash ...
+constexpr uint16_t kOpStageBranchStateAck = 2981;  // hdr5 | u64 instance | u32 state | u32 branch [| u32 hash ...]
 constexpr uint16_t kOpPrepareSequencerAck = 2661;  // hdr5 | u32 player | u64 instance | u16 | u32 sequencer key ...
 constexpr uint16_t kOpUpdateQuestListAck = 2808;   // u8 scope | u32 player | u8 a | u8 b | 34-byte quests
 constexpr size_t kQuestSize = 34;                  // u32 key | u32 | u64 | u64 | u64 | u8 state | u8 flag
@@ -87,7 +87,8 @@ void stage_tracker_observe_s2c(const uint8_t* packet, size_t size) {
     } else if (op == kOpPrepareSequencerAck && size >= 5 + 23) {
         std::lock_guard lock(g_mutex);
         if (StageInfo* s = entry(at<uint64_t>(p + 9)); s && !s->key) s->key = at<uint32_t>(p + 19);
-    } else if (op == kOpStageBranchStateAck && size >= 5 + 25) {
+    } else if (op == kOpStageBranchStateAck && size >= 5 + 21) {
+        // Payload 21, 29 or 37 bytes (NOTES.md 2026-10-20 15:25); state and branch are in all of them.
         const uint64_t now = GetTickCount64();
         std::lock_guard lock(g_mutex);
         StageInfo* s = entry(at<uint64_t>(p + 5));

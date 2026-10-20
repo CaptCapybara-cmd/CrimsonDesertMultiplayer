@@ -11,6 +11,10 @@
 //     (again after retry_ms if no answer came);
 //   - a local instance already has that branch: done (applied if we sent it,
 //     otherwise the guest's game got there by itself);
+//   - the host's previous branch of this key is done here, and an instance sits
+//     on it (not busy): send the next one to that instance. A scene runs through
+//     several branches (the butcher shop: 6, 0, 3, 1) and the game sends the later
+//     ones while the stage is not waiting (NOTES.md 2026-10-20 15:20);
 //   - otherwise (no such stage here yet, or it went another way): hold, and
 //     drop it after expire_ms.
 // Only branches the host's game really chose are ever sent: a made-up branch
@@ -76,24 +80,34 @@ public:
             while (!q.empty()) {
                 Entry& e = q.front();
                 const LocalStage* waiting = nullptr;
+                const LocalStage* chained = nullptr;
+                const auto prev = last_.find(it->first);
                 bool reached = false;
                 for (const auto& l : local) {
                     if (l.key != it->first) continue;
-                    if (l.state != 0 && l.branch == e.branch) reached = true;
+                    // On that branch; after a scene's last branch the state can be 0 again (the
+                    // butcher shop's branch 1), which counts when we sent it.
+                    if (l.branch == e.branch && (l.state != 0 || e.sent_ms)) reached = true;
                     if (l.state == 0 && l.branch == 0xFFFFFFFF && !l.busy && !waiting) waiting = &l;
+                    if (prev != last_.end() && l.state != 0 && l.branch == prev->second && !l.busy && !chained) {
+                        chained = &l;
+                    }
                 }
                 if (reached) {
                     ++(e.sent_ms ? c_.applied : c_.reached_alone);
+                    last_[it->first] = e.branch;
                     q.pop_front();
                     --size_;
                     continue;
                 }
                 if (now_ms - e.received_ms > s_.expire_ms) {
                     ++c_.expired;
+                    last_.erase(it->first);
                     q.pop_front();
                     --size_;
                     continue;
                 }
+                if (!waiting) waiting = chained;
                 if (waiting && (!e.sent_ms || now_ms - e.sent_ms >= s_.retry_ms)) {
                     e.sent_ms = now_ms ? now_ms : 1;
                     out.push_back({waiting->instance, it->first, e.branch, e.flags});
@@ -110,6 +124,7 @@ public:
     const Counters& counters() const { return c_; }
     void clear() {
         by_key_.clear();
+        last_.clear();
         size_ = 0;
     }
 
@@ -122,6 +137,7 @@ private:
     };
     Settings s_;
     std::map<uint32_t, std::deque<Entry>> by_key_;
+    std::map<uint32_t, uint32_t> last_;  // key -> the host's last branch done here
     size_t size_ = 0;
     Counters c_;
 };

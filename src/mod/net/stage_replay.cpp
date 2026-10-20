@@ -37,7 +37,8 @@ constexpr uint64_t kNpcWaitMs = 60000;
 // cdmp_stage_record.txt, in the order things happened:
 //   "KKKKKKKK branch flags"      a branch the game chose
 //   "Q KKKKKKKK state flag"      a quest list delta
-//   "M KKKKKKKK kind state hex"  a mission row that appeared or changed (hex = the whole 55-byte row)
+//   "M KKKKKKKK kind state hex"  a mission row that appeared or changed (hex = the whole 55-byte row;
+//                                the accept time in it, +14 in a kind-5 row else +6, is not compared)
 //   "D op ms hex"                a quest dialog message the game sent (ms = since the record started)
 //   "N RRRRRRRR SSSSSSSS"        an NPC in those messages: runtime id -> static character key
 //                                (runtime ids change between loads; the replay translates them)
@@ -251,6 +252,11 @@ void replay_session(void* stop, const std::wstring& path, uint32_t rng_pin) {
             std::vector<uint8_t> row(m.row.begin(), m.row.end());
             std::string diff;
             if (const auto it = rec.missions.find(m.key); it != rec.missions.end()) {
+                // The accept time (game clock) differs per session: not compared, taken from the recording.
+                const size_t clock = row.size() > 4 && row[4] == 5 ? 14 : 6;
+                if (row.size() >= clock + 4 && it->second.size() >= clock + 4) {
+                    std::memcpy(row.data() + clock, it->second.data() + clock, 4);
+                }
                 for (size_t i = 0; i < row.size() && i < it->second.size(); ++i) {
                     if (row[i] != it->second[i]) diff += std::format(" +{}:{:02X}(recorded {:02X})", i, row[i], it->second[i]);
                 }
@@ -270,7 +276,7 @@ void replay_session(void* stop, const std::wstring& path, uint32_t rng_pin) {
             last_progress = GetTickCount64();
         }
         // Done: every recorded quest change came back, or nothing moved for 90 s after the last apply.
-        if (expected && matched() == expected && next_dialog == rec.dialogs.size()) break;
+        if (expected && matched() == expected && next_dialog == rec.dialogs.size() && queue.pending() == 0) break;
         if (last_applied && GetTickCount64() - last_progress > 90000 && next_dialog == rec.dialogs.size()) break;
         if (dialogs_done_ms && rec.branches.empty() && GetTickCount64() - dialogs_done_ms > 60000) break;
     }
