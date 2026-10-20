@@ -65,6 +65,8 @@ struct Config {
     bool dev_stage_sync_feed = false;
     bool dev_stage_replay = false;
     uint32_t dev_stage_record_stay_s = 240;
+    // Replay: the server's rand state for the replayed quest dialog answer (quest_rng.h); 0 = leave it alone.
+    uint32_t dev_stage_replay_rng = 0;
     // Every 2 s, log who sits in the attacker lists of our player and of the
     // other player's copy (attack_probe.h). Read only.
     bool dev_attack_probe = false;

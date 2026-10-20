@@ -11,6 +11,7 @@
 
 #include "mod/log.h"
 #include "mod/net/local_capture.h"
+#include "mod/net/quest_rng.h"
 #include "common/stage_sync.h"
 #include "mod/net/stage_tracker.h"
 #include "mod/net/troc_sniffer.h"
@@ -139,7 +140,9 @@ void record_session(void* stop, const std::wstring& path, uint32_t stay_s) {
 
 // Every recorded branch goes through the same queue the network sync uses; the
 // recorded quest changes are the oracle: they must come back here too.
-void replay_session(void* stop, const std::wstring& path) {
+constexpr uint16_t kOpQuestDialogEndReq = 2342;
+
+void replay_session(void* stop, const std::wstring& path, uint32_t rng_pin) {
     const auto rec = load(path);
     if (rec.branches.empty() && rec.dialogs.empty()) {
         log::warn("StageReplay: RESULT: SKIP nothing recorded");
@@ -189,6 +192,10 @@ void replay_session(void* stop, const std::wstring& path) {
                     dialog_baseline = true;
                 }
                 const auto& d = rec.dialogs[next_dialog];
+                if (rng_pin && d.op == kOpQuestDialogEndReq) {
+                    quest_rng_pin_next(rng_pin);
+                    log::info("StageReplay: the server rand state for this answer is pinned to 0x{:08X}", rng_pin);
+                }
                 const bool ok = stage_tracker_send_dialog(d.op, d.payload);
                 log::info("StageReplay: dialog message {} ({} bytes) sent{}", d.op, d.payload.size(),
                           ok ? "" : " - NOT sent (injection refused)");
@@ -252,14 +259,16 @@ void replay_session(void* stop, const std::wstring& path) {
 }  // namespace
 
 void stage_replay_loop(void* stop, const std::wstring& dir, bool record, bool replay, uint32_t stay_s,
-                       bool quit_after) {
+                       bool quit_after, uint32_t rng_pin) {
     const std::wstring path = dir + L"\\cdmp_stage_record.txt";
     log::warn("StageReplay: {} (test copy only; do not save)", record ? "RECORD" : "REPLAY, it WRITES quest state");
+    const bool rng_hooked = quest_rng_install(replay && rng_pin != 0);
+    if (rng_pin && !rng_hooked) log::error("StageReplay: rand pin 0x{:08X} requested but the hook is not in", rng_pin);
     while (!in_world()) {
         if (!wait(stop, 500)) return;
     }
     if (record) record_session(stop, path, stay_s);
-    else if (replay) replay_session(stop, path);
+    else if (replay) replay_session(stop, path, rng_hooked ? rng_pin : 0);
     if (quit_after && wait(stop, 3000)) test_quit_game(20000);
 }
 

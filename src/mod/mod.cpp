@@ -449,6 +449,7 @@ struct LateInit {
     bool test_autoquit;
     bool stage_record, stage_replay;
     uint32_t stage_record_stay_s;
+    uint32_t stage_replay_rng;
     bool guest_hits, guest_hit_stagger, player_hit_react, player_hit_lethal;
     bool attack_probe;
     int copy_attack_slots;
@@ -680,7 +681,7 @@ DWORD WINAPI late_init(LPVOID param) {
                 nullptr, 0,
                 [](LPVOID) -> DWORD {
                     net::stage_replay_loop(g_stop, copy.dir, copy.stage_record, copy.stage_replay,
-                                           copy.stage_record_stay_s, copy.test_autoquit);
+                                           copy.stage_record_stay_s, copy.test_autoquit, copy.stage_replay_rng);
                     return 0;
                 },
                 nullptr, 0, nullptr));
@@ -854,6 +855,7 @@ DWORD WINAPI worker(LPVOID) {
                                                       in_game && cfg.dev_stage_record,
                                                       in_game && cfg.dev_stage_replay,
                                                       cfg.dev_stage_record_stay_s,
+                                                      cfg.dev_stage_replay_rng,
                                                       cfg.coop_guest_hits, cfg.coop_guest_hit_stagger,
                                                       cfg.coop_player_hit_react, cfg.coop_player_hit_lethal,
                                                       in_game && cfg.dev_attack_probe, cfg.coop_copy_attack_slots,

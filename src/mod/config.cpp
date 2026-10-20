@@ -150,6 +150,7 @@ Config load_config(const std::wstring& ini_path) {
     c.dev_stage_sync_feed = read_uint(ini_path, L"dev", L"stage_sync_feed", 0) != 0;
     c.dev_stage_replay = read_uint(ini_path, L"dev", L"stage_replay", 0) != 0;
     c.dev_stage_record_stay_s = read_uint(ini_path, L"dev", L"stage_record_stay_s", 240);
+    c.dev_stage_replay_rng = read_uint(ini_path, L"dev", L"stage_replay_rng", 0);
     c.dev_attack_probe = read_uint(ini_path, L"dev", L"attack_probe", 0) != 0;
     c.coop_enabled = read_uint(ini_path, L"coop", L"enabled", 0) != 0;
     c.coop_delay_ms = std::clamp(read_uint(ini_path, L"coop", L"delay_ms", c.coop_delay_ms), 50u, 5000u);

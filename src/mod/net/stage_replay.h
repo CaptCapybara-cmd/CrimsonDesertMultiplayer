@@ -15,6 +15,8 @@
 //                         most 3 s), and checks that the recorded quest and mission
 //                         changes happen here too.
 //                         Logs "StageReplay: RESULT: PASS|FAIL|SKIP".
+// With record or replay on, QuestDialogEndReq's handler is hooked and every accept
+// logs the server rand state it starts from ("QuestRng:").
 // Only branches the game really sent are replayed: a made-up branch number
 // crashes the game (NOTES.md 2026-10-19 16:18). Test copy only; never save.
 
@@ -26,7 +28,8 @@ namespace cdmp::net {
 
 // Own thread. `dir` is the mod folder; `stay_s` = seconds in the world before
 // a record session ends; `quit_after` closes the game when done. `stop` is a HANDLE.
+// `rng_pin` != 0: the replayed QuestDialogEndReq starts from that server rand state (quest_rng.h).
 void stage_replay_loop(void* stop, const std::wstring& dir, bool record, bool replay, uint32_t stay_s,
-                       bool quit_after);
+                       bool quit_after, uint32_t rng_pin = 0);
 
 }  // namespace cdmp::net
