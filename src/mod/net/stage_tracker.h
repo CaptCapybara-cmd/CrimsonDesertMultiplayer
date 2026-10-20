@@ -32,6 +32,13 @@ struct GameBranch {
     uint64_t instance = 0;
 };
 
+// One quest in an UpdateQuestListAck delta (header a=0): a quest added or changed.
+struct QuestDelta {
+    uint32_t key = 0;
+    uint8_t state = 0;
+    uint8_t flag = 0;
+};
+
 // Sniffer writer thread (packets with their 5-byte header).
 void stage_tracker_observe_s2c(const uint8_t* packet, size_t size);
 void stage_tracker_observe_c2s(const uint8_t* packet, size_t size);
@@ -45,6 +52,8 @@ std::vector<GameBranch> stage_tracker_take_game_branches();
 // Sends StageBranchStateReq(instance, branch, flags) to our own server; the copy
 // of it the sniffer sees is not counted as the game's own.
 bool stage_tracker_send_branch(uint64_t instance, uint32_t branch, uint16_t flags);
+// Quest list deltas since the last call.
+std::vector<QuestDelta> stage_tracker_take_quest_deltas();
 // A new world (loading screen): instance ids are reused, forget them.
 void stage_tracker_reset();
 

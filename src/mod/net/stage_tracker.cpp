@@ -14,6 +14,9 @@ namespace {
 constexpr uint16_t kOpStageBranchStateReq = 2436;  // u64 instance | u32 branch | u16 flags
 constexpr uint16_t kOpStageBranchStateAck = 2981;  // hdr5 | u64 instance | u32 state | u32 branch | u32 hash ...
 constexpr uint16_t kOpPrepareSequencerAck = 2661;  // hdr5 | u32 player | u64 instance | u16 | u32 sequencer key ...
+constexpr uint16_t kOpUpdateQuestListAck = 2808;   // u8 scope | u32 player | u8 a | u8 b | 34-byte quests
+constexpr size_t kQuestSize = 34;                  // u32 key | u32 | u64 | u64 | u64 | u8 state | u8 flag
+constexpr size_t kMaxQuestDeltas = 512;
 constexpr uint32_t kNoBranch = 0xFFFFFFFF;
 constexpr size_t kMaxInstances = 4096;
 constexpr size_t kMaxGameBranches = 256;
@@ -21,6 +24,7 @@ constexpr size_t kMaxGameBranches = 256;
 std::mutex g_mutex;
 std::map<uint64_t, StageInfo> g_stages;
 std::vector<GameBranch> g_game_branches;
+std::vector<QuestDelta> g_quest_deltas;
 bool g_collect = false;
 // Our own injected requests pass the same capture: one per instance is ours.
 std::map<uint64_t, int> g_ours;
@@ -47,7 +51,14 @@ void stage_tracker_observe_s2c(const uint8_t* packet, size_t size) {
     if (size < 5 + 5 + 8) return;
     const uint16_t op = at<uint16_t>(packet);
     const uint8_t* p = packet + 5;
-    if (op == kOpPrepareSequencerAck && size >= 5 + 23) {
+    if (op == kOpUpdateQuestListAck && size >= 5 + 7) {
+        // Only deltas (a = 0): the full list at load (a = 1) is not news.
+        if (p[5] != 0 || (size - 5 - 7) % kQuestSize != 0) return;
+        std::lock_guard lock(g_mutex);
+        for (size_t off = 7; off + kQuestSize <= size - 5 && g_quest_deltas.size() < kMaxQuestDeltas; off += kQuestSize) {
+            g_quest_deltas.push_back({at<uint32_t>(p + off), p[off + 32], p[off + 33]});
+        }
+    } else if (op == kOpPrepareSequencerAck && size >= 5 + 23) {
         std::lock_guard lock(g_mutex);
         if (StageInfo* s = entry(at<uint64_t>(p + 9)); s && !s->key) s->key = at<uint32_t>(p + 19);
     } else if (op == kOpStageBranchStateAck && size >= 5 + 25) {
@@ -139,6 +150,13 @@ bool stage_tracker_send_branch(uint64_t instance, uint32_t branch, uint16_t flag
     std::lock_guard lock(g_mutex);
     if (auto it = g_ours.find(instance); it != g_ours.end() && --it->second <= 0) g_ours.erase(it);
     return false;
+}
+
+std::vector<QuestDelta> stage_tracker_take_quest_deltas() {
+    std::lock_guard lock(g_mutex);
+    std::vector<QuestDelta> out;
+    out.swap(g_quest_deltas);
+    return out;
 }
 
 void stage_tracker_reset() {

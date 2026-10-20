@@ -4,13 +4,12 @@
 // quest sync needs: the host's branch, applied to the guest's own instance.
 //
 //   [dev] stage_record=1  every StageBranchStateReq the game sends is written to
-//                         cdmp_stage_record.txt as "sequencer_key branch flags"
-//                         (the stage's static key from PrepareSequencerAck; the
-//                         runtime instance id differs per session).
-//   [dev] stage_replay=1  reads that file; when an instance whose key was
-//                         recorded is reported waiting, sends the first recorded
-//                         branch for it 2 s later (the game's own would come
-//                         ~45 s later). Logs "StageReplay: RESULT: PASS|FAIL|SKIP".
+//                         cdmp_stage_record.txt as "sequencer_key branch flags", and
+//                         every quest list change as "Q quest_key state flag".
+//   [dev] stage_replay=1  feeds all recorded branches through the stage sync queue
+//                         (common/stage_sync.h) onto this session's instances, and
+//                         checks that the recorded quest changes happen here too.
+//                         Logs "StageReplay: RESULT: PASS|FAIL|SKIP".
 // Only branches the game really sent are replayed: a made-up branch number
 // crashes the game (NOTES.md 2026-10-19 16:18). Test copy only; never save.
 
