@@ -29,6 +29,7 @@ struct Config {
     bool overlay_english = true;      // [overlay] language = en | es: the panel's texts
 
     bool sniffer_enabled = true;  // hook internal client/server packets (needed by co-op)
+    bool sniffer_flight = false;  // flight recorder of the shared story (net/flight.h)
     bool sniffer_record = false;  // also write them to cdmp_packets_*.log/.bin (dev; 50-100 MB/session)
 
     // Experiment 4c: F9 spawns a clone of the player, F10 removes it. Writes

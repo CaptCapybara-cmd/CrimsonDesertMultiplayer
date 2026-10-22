@@ -184,7 +184,7 @@ void ClientSession::on_datagram(std::span<const uint8_t> bytes, uint32_t now_ms)
         }
     } else if (auto* data = std::get_if<proto::RelData>(&packet->body)) {
         now_for_reliable_ = now_ms;
-        for (auto& msg : reliable_.on_data(*data)) {
+        for (auto& msg : reliable_.on_data(*data, now_ms)) {
             ++stats_.reliable_received;
             if (static_cast<uint8_t>(msg.kind) > proto::kMaxRelKind) {
                 ++stats_.unknown_kinds;  // acknowledged by the channel, dropped here

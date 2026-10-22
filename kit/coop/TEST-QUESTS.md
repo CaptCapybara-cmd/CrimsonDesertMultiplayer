@@ -46,11 +46,24 @@ Each step: do it, then write down what you saw (yes / no / what happened instead
    closes the game) while the host talks to that NPC and accepts. The guest comes back and walks to the NPC: does the
    guest get the request?
 
+## When something looks wrong
+
+**Both players press Ctrl+F12 at the same moment** ("now!"). Each game then saves a flight record
+(`bin64\flight\*.cofr`) and writes a numbered mark in `cdmp.log`. Write down which step it was.
+
 ## What to send back
 
-From **both** PCs, from the `bin64` folder: `cdmp.log` (and `cdmp.1.log` ... if there are several). The kit records
-packets too (`[sniffer] record=1`): `cdmp_packets_*.log` and `.bin` (50-100 MB per session); send them if you can,
-they show exactly what each game did. Plus your notes from each step.
+From **both** PCs, from the `bin64` folder:
+
+- the `flight` folder (`*.cofr`, small): the flight recorder keeps the last minutes of what each game shared and
+  applied and saves `...-latest.cofr` every 30 s, plus one file per Ctrl+F12 and per failed shared accept. With both
+  PCs' files, `python -I tools/flight/flight.py diverge host.cofr guest.cofr` (coop-anything) shows where the two games
+  first disagreed;
+- `cdmp.log` (and `cdmp.1.log` ... if there are several);
+- if you can: `cdmp_packets_*.log` and `.bin` (`[sniffer] record=1`, 50-100 MB per session), which show exactly what each
+  game did.
+
+Plus your notes from each step.
 
 In `cdmp.log`, the interesting lines start with `Quest share:` and `Stage sync:` (the guest's also say whether an accept
 was applied, waited, retried or given up).

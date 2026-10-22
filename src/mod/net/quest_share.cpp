@@ -11,6 +11,7 @@
 
 #include "common/quest_accept.h"
 #include "mod/log.h"
+#include "mod/net/flight.h"
 #include "mod/net/stage_tracker.h"
 #include "mod/net/troc_sniffer.h"
 #include "mod/test_input.h"
@@ -139,6 +140,7 @@ std::vector<proto::QuestAcceptMsg> quest_share_tick(bool linked, bool host, bool
     const bool loading = sniffer_world_loading();
     // A loading screen keeps the queue: it names NPCs by static key and looks the runtime id up
     // each time (clearing it lost the host's accepts: found by the fuzzer, tests/fuzz).
+    if (loading && !g_was_loading) flight_marker("loading screen (runtime ids change)");
     g_was_loading = loading;
     const uint64_t now = GetTickCount64();
     if (in_world && !loading) {
@@ -184,6 +186,11 @@ std::vector<proto::QuestAcceptMsg> quest_share_tick(bool linked, bool host, bool
         const auto& c = g_queue.counters();
         if (std::memcmp(&c, &g_logged, sizeof c) != 0) {
             log::info("Quest share: {}", quest_share_describe());
+            flight_marker("quest share: " + quest_share_describe());
+            if (c.failed > g_logged.failed || c.expired > g_logged.expired) {
+                flight_desync(std::format("a shared accept {} here ({})", c.failed > g_logged.failed ? "failed" : "was given up",
+                                          quest_share_describe()));
+            }
             g_logged = c;
         }
     }

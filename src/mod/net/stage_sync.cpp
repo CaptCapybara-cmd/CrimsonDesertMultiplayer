@@ -11,6 +11,7 @@
 
 #include "common/stage_sync.h"
 #include "mod/log.h"
+#include "mod/net/flight.h"
 #include "mod/net/stage_tracker.h"
 #include "mod/net/troc_sniffer.h"
 #include "mod/test_input.h"
@@ -29,6 +30,7 @@ bool g_collecting = false;
 uint32_t g_in_world_since = 0;
 uint32_t g_last_stats = 0;
 StageSyncQueue::Counters g_logged{};
+StageSyncQueue::Counters g_marked{};
 
 // Echo test state.
 enum class Feed { Waiting, Sent, Applied, Done };
@@ -142,6 +144,10 @@ std::vector<proto::StageBranchMsg> stage_sync_tick(bool linked, bool host, bool 
         }
     }
     const auto& c = g_queue.counters();
+    if (std::memcmp(&c, &g_marked, sizeof c) != 0) {  // every change, for the flight recorder
+        flight_marker("stage sync: " + stage_sync_describe());
+        g_marked = c;
+    }
     if (now_ms - g_last_stats >= 10000 && std::memcmp(&c, &g_logged, sizeof c) != 0) {
         log::info("Stage sync: {}", stage_sync_describe());
         g_logged = c;

@@ -21,7 +21,10 @@ quests() {  # add the quest keys right after [coop]
 ; Shared quests (experimental): the host'"'"'s scene branches and accepted requests also on the guest.\
 ; Each player hands in their own request.\
 stage_sync=1\
-quest_share=1/' "$1"
+quest_share=1/' "$1" | sed 's/^\[sniffer\]\r\{0,1\}$/[sniffer]\
+; Grabadora de vuelo: flight\\*.cofr para comparar las dos partidas si algo sale mal (Ctrl+F12 guarda una)\
+; Flight recorder: flight\\*.cofr to compare both games when something goes wrong (Ctrl+F12 saves one)\
+flight=1/'
 }
 quests "$root/kit/coop/cdmp.ini.anfitrion" > "$staging/cdmp.ini.anfitrion"
 quests "$root/kit/coop/cdmp.ini.invitado" > "$staging/cdmp.ini.invitado"
@@ -29,6 +32,7 @@ cp "$staging/cdmp.ini.invitado" "$staging/cdmp.ini"
 cp "$root/kit/coop/LEEME.txt" "$staging/"
 cp "$root/kit/coop/TEST-QUESTS.md" "$staging/"
 grep -c '^quest_share=1' "$staging/cdmp.ini.anfitrion" "$staging/cdmp.ini.invitado" >/dev/null
+grep -c '^flight=1' "$staging/cdmp.ini.anfitrion" "$staging/cdmp.ini.invitado" >/dev/null
 (cd "$staging" && sha256sum $(ls | grep -v SHA256.txt) > SHA256.txt)
 (cd "$(dirname "$staging")" && python3 -I -c "
 import sys, zipfile, os

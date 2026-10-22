@@ -80,7 +80,8 @@ void ReliableChannel::forget_stream(uint32_t stream) {
     }
 }
 
-std::vector<ReliableChannel::Message> ReliableChannel::on_data(const proto::RelData& data) {
+std::vector<ReliableChannel::Message> ReliableChannel::on_data(const proto::RelData& data,
+                                                               std::optional<uint32_t> now_ms) {
     std::vector<Message> out;
     if (data.stream != rx_stream_) {
         if (old_streams_.count(data.stream)) {
@@ -90,6 +91,10 @@ std::vector<ReliableChannel::Message> ReliableChannel::on_data(const proto::RelD
             ++refused_;
             return out;
         }
+        if (rx_stream_ && now_ms && *now_ms - rx_last_ms_ < kSwitchQuietMs) {
+            ++refused_;  // the current stream is alive: this one is a straggler, or will be resent
+            return out;
+        }
         // The sender (re)started: its ordering starts at its stream id.
         forget_stream(rx_stream_);
         rx_stream_ = rx_next_ = data.stream;
@@ -97,6 +102,7 @@ std::vector<ReliableChannel::Message> ReliableChannel::on_data(const proto::RelD
         ready_.clear();
         held_bytes_ = 0;
     }
+    if (now_ms) rx_last_ms_ = *now_ms;
     if (before(data.msg_id, rx_next_) || ready_.count(data.msg_id)) {
         send_(proto::RelAck{data.msg_id, data.index});  // a late duplicate of a delivered message
         return out;

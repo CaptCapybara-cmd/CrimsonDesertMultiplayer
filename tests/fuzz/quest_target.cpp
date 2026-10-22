@@ -18,14 +18,17 @@
 // Ops: Activate = the player meets request a's NPC and accepts it (the host's is shared);
 // Pickup = cooks and hands in request a (never shared); Move c = goes to area c (which NPCs are
 // loaded); Drop = a loading screen on that machine; Hit = an unrelated mission row changes there;
-// Join/Leave = the guest's link; Stale = an old shared message again; SetLink = the link.
-// Save/Load and Spawn are ignored (no host rewind here).
+// Join/Leave = the guest's link; Stale = an old shared message again; SetLink = the link;
+// Spawn = the guest restarts its game (its world kept as saved, the mod starts fresh, then it
+// reconnects); Save/Load = the host makes a save point / loads it (its world goes back, runtime
+// ids change; the guest keeps what it has, a guest's progress is never rolled back).
 //
 // View (what must converge): for every request the HOST accepted, whether each machine has it
 // accepted; for every scene the host finished, whether each machine's scene finished. A guest's
 // own accepts and hand-ins are its own and are not compared.
 // Native checks: a made-up branch reached a server (crash); the mod sent a hand-in.
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <memory>
 #include <set>
@@ -37,6 +40,10 @@
 #include "common/reliable.h"
 #include "common/stage_sync.h"
 #include "common/story_log.h"
+#include "common/story_digest.h"
+
+#include "cofr.h"
+#include <cstdlib>
 
 namespace coopfuzz {
 namespace {
@@ -79,6 +86,7 @@ struct Machine {
     };
     Req req[kRequests];
     int noise[kNoiseRows] = {1, 1, 1};
+    struct Snapshot { Req req[kRequests]; int noise[kNoiseRows]; bool valid = false; } save;
     int crashes = 0, mod_handins = 0;
     // The game's own scripted actions in flight: (time, kind, request, chain index).
     struct Pending { uint64_t at; int kind; int r; int idx; };
@@ -88,6 +96,9 @@ struct Machine {
     cdmp::GuestAcceptQueue accepts;
     cdmp::AcceptDetector detector;
     cdmp::StoryReceiver story_rx;
+    // Flight recorder (env CDMP_FLIGHT_DIR): what the mod records (mod/net/flight.cpp), per machine.
+    std::unique_ptr<cofr::Recorder> rec;
+    cdmp::StoryDigest shared;
     std::unique_ptr<cdmp::ReliableChannel> out;  // to the other side (host: one per guest, below)
     uint64_t last_answer_ms = 0;
 
@@ -141,6 +152,21 @@ public:
             mc->area = static_cast<int>((s.seed + static_cast<uint64_t>(m)) % kAreas);
             ms_.push_back(std::move(mc));
         }
+        if (const char* dir = std::getenv("CDMP_FLIGHT_DIR")) {
+            flight_dir_ = dir;
+            for (auto& mc : ms_) {
+                cofr::Config c;
+                c.slot = static_cast<uint8_t>(mc->id);
+                c.role = mc->id == 0 ? cofr::kRoleHost : cofr::kRoleClient;
+                c.label = mc->id == 0 ? "host" : "guest" + std::to_string(mc->id);
+                c.dir = dir;
+                c.schemaJson = R"json({"game":"crimson-desert (cdmp fuzz)","digest_categories":{"0":"shared stage branches","1":"shared mission rows"}})json";
+                mc->rec = std::make_unique<cofr::Recorder>(c);
+                mc->rec->setClockSource([this] { return now_ * 1000; });
+                mc->rec->setWallStart(1);
+                for (int o = 0; o < n_; ++o) mc->rec->mapPeer(static_cast<uint32_t>(o), static_cast<uint8_t>(o));
+            }
+        }
         // Reliable channels: host <-> each guest, one per direction end.
         for (int g = 1; g < n_; ++g) {
             host_out_.push_back(make_channel(0, g));
@@ -187,6 +213,33 @@ public:
                                                    static_cast<uint32_t>(now_));
                 break;
             }
+            case OpKind::Spawn:  // the guest restarts its game
+                if (m == 0) break;
+                ++counters_["op_guest_restart"];
+                mc.stages = cdmp::StageSyncQueue();
+                mc.accepts = cdmp::GuestAcceptQueue();
+                mc.story_rx = cdmp::StoryReceiver();
+                mc.shared = cdmp::StoryDigest();
+                mc.todo.clear();
+                ++mc.gen;
+                reconnect(m);
+                break;
+            case OpKind::Save:
+                ++counters_["op_host_save"];
+                std::copy(std::begin(ms_[0]->req), std::end(ms_[0]->req), std::begin(ms_[0]->save.req));
+                std::copy(std::begin(ms_[0]->noise), std::end(ms_[0]->noise), std::begin(ms_[0]->save.noise));
+                ms_[0]->save.valid = true;
+                break;
+            case OpKind::Load: {
+                Machine& h = *ms_[0];
+                if (!h.save.valid) break;
+                ++counters_["op_host_load"];
+                std::copy(std::begin(h.save.req), std::end(h.save.req), std::begin(h.req));
+                std::copy(std::begin(h.save.noise), std::end(h.save.noise), std::begin(h.noise));
+                h.todo.clear();
+                ++h.gen;
+                break;
+            }
             case OpKind::Leave:
                 if (m != 0) { ++counters_["op_leave"]; net_.setConnected(m, false); }
                 break;
@@ -228,6 +281,10 @@ public:
             for (auto& mc : ms_) run_game(*mc);
             while (now_ >= next50_) {
                 next50_ += 50;
+                if (now_ >= next_digest_) {
+                    next_digest_ += 5000;
+                    for (auto& mc : ms_) record_digest(*mc);
+                }
                 for (auto& mc : ms_) mod_tick(*mc);
                 for (auto& c : host_out_) c->tick(static_cast<uint32_t>(now_));
                 for (int g = 1; g < n_; ++g) ms_[static_cast<size_t>(g)]->out->tick(static_cast<uint32_t>(now_));
@@ -290,9 +347,13 @@ public:
             counters_[m + "expired"] = c.expired;
             counters_[m + "interrupted"] = c.interrupted;
             counters_[m + "retried"] = c.retried;
+            counters_[m + "rel_refused"] = ms_[static_cast<size_t>(g)]->out->refused();
+            counters_[m + "host_unacked"] = host_out_[static_cast<size_t>(g - 1)]->unacked_fragments();
+            counters_[m + "connected"] = net_.connected(g);
         }
     }
     std::vector<Violation> nativeViolations() override {
+        if (!flight_dir_.empty()) dump_flight();
         std::vector<Violation> v;
         for (const auto& mc : ms_) {
             if (mc->crashes) v.push_back({"stale_applied", "m" + std::to_string(mc->id) + ": " + std::to_string(mc->crashes) +
@@ -310,7 +371,9 @@ private:
             p.seq = ++seq_;
             p.send_ms = static_cast<uint32_t>(now_);
             p.body = std::move(b);
-            net_.send(from, to, cdmp::proto::encode(p));
+            auto bytes = cdmp::proto::encode(p);
+            if (auto& r = ms_[static_cast<size_t>(from)]->rec) r->netOut(static_cast<uint32_t>(to), bytes.data(), bytes.size());
+            net_.send(from, to, std::move(bytes));
         });
     }
     cdmp::ReliableChannel& channel_to(int from, int to) {
@@ -318,6 +381,7 @@ private:
     }
 
     void reconnect(int g) {
+        if (std::getenv("CDMP_FUZZ_TRACE")) std::fprintf(stderr, "t=%llu reconnect m%d\n", (unsigned long long)now_, g);
         // common/client_session.cpp: a reconnection resets the reliable channel on both sides.
         net_.setConnected(g, true);
         host_out_[static_cast<size_t>(g - 1)]->reset();
@@ -341,13 +405,27 @@ private:
     }
 
     void on_datagram(int at, int from, const Bytes& d) {
+        if (auto& r = ms_[static_cast<size_t>(at)]->rec) r->netIn(static_cast<uint32_t>(from), d.data(), d.size());
         const auto p = cdmp::proto::decode(d);
         if (!p) { ++counters_["datagram_bad"]; return; }
         cdmp::ReliableChannel& ch = channel_to(at, from);
-        if (const auto* ack = std::get_if<cdmp::proto::RelAck>(&p->body)) { ch.on_ack(*ack); return; }
+        if (const auto* ack = std::get_if<cdmp::proto::RelAck>(&p->body)) {
+            if (std::getenv("CDMP_FUZZ_TRACE")) std::fprintf(stderr, "t=%llu m%d <- m%d ACK id=%08x idx=%u unacked_before=%zu\n",
+                                                             (unsigned long long)now_, at, from, ack->msg_id, ack->index, ch.unacked_fragments());
+            ch.on_ack(*ack);
+            return;
+        }
         const auto* data = std::get_if<cdmp::proto::RelData>(&p->body);
         if (!data) return;
-        for (const auto& msg : ch.on_data(*data)) on_message(at, from, msg);
+        ++counters_["m" + std::to_string(at) + "_reldata_in"];
+        if (std::getenv("CDMP_FUZZ_TRACE")) {
+            const auto got = ch.on_data(*data, static_cast<uint32_t>(now_));
+            std::fprintf(stderr, "t=%llu m%d <- m%d stream=%08x id=%08x kind=%d delivered=%zu\n", (unsigned long long)now_, at, from,
+                         data->stream, data->msg_id, (int)data->kind, got.size());
+            for (const auto& msg : got) on_message(at, from, msg);
+            return;
+        }
+        for (const auto& msg : ch.on_data(*data, static_cast<uint32_t>(now_))) on_message(at, from, msg);
     }
 
     void on_message(int at, int from, const cdmp::ReliableChannel::Message& msg) {
@@ -361,6 +439,16 @@ private:
         if (!mc.story_rx.accept(*e) && !bugs_.no_story_dedup) {
             ++counters_["story_duplicate_ignored"];
             return;
+        }
+        mc.shared.note(*e);
+        if (mc.rec) {
+            cofr::AppliedEvent a;
+            a.seq = e->seq;
+            a.epoch = e->log_id;
+            a.effectTag = static_cast<uint8_t>(e->kind);
+            const uint8_t k = static_cast<uint8_t>(e->kind);
+            a.hash = cofr::hash64(e->bytes.data(), e->bytes.size(), cofr::hash64(&k, 1));
+            mc.rec->applied(a);
         }
         if (e->kind == cdmp::proto::RelKind::StageBranch) {
             if (const auto b = cdmp::proto::decode_stage_branch(e->bytes)) mc.stages.push(*b, t);
@@ -461,6 +549,17 @@ private:
 
     void share(cdmp::proto::RelKind kind, std::vector<uint8_t> bytes) {
         const auto e = log_.append(kind, std::move(bytes));
+        Machine& host = *ms_[0];
+        host.shared.note(e);
+        if (host.rec) {
+            cofr::CapturedEvent c;
+            c.seq = e.seq;
+            c.epoch = e.log_id;
+            c.effectCount = 1;
+            const uint8_t k = static_cast<uint8_t>(e.kind);
+            c.hash = cofr::hash64(e.bytes.data(), e.bytes.size(), cofr::hash64(&k, 1));
+            host.rec->captured(c);
+        }
         const auto w = cdmp::proto::encode_story(e);
         for (int g = 1; g < n_; ++g) host_out_[static_cast<size_t>(g - 1)]->send(cdmp::proto::RelKind::Story, w, static_cast<uint32_t>(now_));
     }
@@ -511,8 +610,39 @@ private:
         }
     }
 
+    void record_digest(Machine& mc) {
+        if (!mc.rec || mc.shared.empty()) return;
+        const uint32_t seq = mc.id == 0 ? (log_.entries().empty() ? 0 : log_.entries().back().seq) : mc.story_rx.last();
+        const uint32_t epoch = mc.id == 0 ? log_.id() : mc.story_rx.id();
+        const auto local = mc.local_stages();
+        const std::vector<cdmp::StoryDigest::Entry> cats[2] = {
+            mc.shared.stages([&](uint32_t key) -> std::optional<std::pair<uint32_t, uint32_t>> {
+                for (const auto& l : local) if (l.key == key) return std::make_pair(l.state, l.branch);
+                return std::nullopt;
+            }),
+            mc.shared.missions([&mc](uint32_t key) { return mc.mission_kind(key); }),
+        };
+        for (uint8_t c = 0; c < 2; ++c) {
+            cofr::BucketedState st;
+            for (const auto& e : cats[c]) st.set(e.key, e.value_hash);
+            mc.rec->digest(st.digest(c, epoch, seq), cofr::kFlagBucketed);
+            mc.rec->digestDetail(c, epoch, seq, st.entries());
+            for (const auto& e : cats[c]) mc.rec->entryText(e.key, e.value_hash, e.text);
+        }
+    }
+
+    void dump_flight() {
+        for (auto& mc : ms_) {
+            if (!mc->rec) continue;
+            record_digest(*mc);
+            mc->rec->dump(flight_dir_ + "/" + mc->rec->config().label + ".cofr", cofr::kDumpTest);
+        }
+    }
+
     LossyLink net_;
     int n_;
+    std::string flight_dir_;
+    uint64_t next_digest_ = 5000;
     Bugs bugs_;
     bool frozen_ = false;
     uint64_t now_ = 0, next50_ = 50;

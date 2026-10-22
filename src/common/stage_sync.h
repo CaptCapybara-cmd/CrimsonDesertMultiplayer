@@ -15,6 +15,12 @@
 //     on it (not busy): send the next one to that instance. A scene runs through
 //     several branches (the butcher shop: 6, 0, 3, 1) and the game sends the later
 //     ones while the stage is not waiting (NOTES.md 2026-10-20 15:20);
+//   - (checked before the next rule) a later branch of this key in the queue is
+//     the one an instance here sits on: this guest is already past the ones before
+//     it (a guest that restarted mid-scene gets the whole story log again with a
+//     fresh queue; a host that loaded an older save plays a scene again from its
+//     start; both found by the fuzzer, tests/fuzz): those count as reached, and
+//     the next one follows;
 //   - otherwise (no such stage here yet, or it went another way): hold, and
 //     drop it after expire_ms.
 // Only branches the host's game really chose are ever sent: a made-up branch
@@ -122,6 +128,29 @@ public:
                     q.pop_front();
                     --size_;
                     continue;
+                }
+                {
+                    // Resume where this world's stage is: the earliest later entry it sits on. Before
+                    // chaining: after the host loaded an older save mid-scene and plays it again, the
+                    // guest's stage is ahead of the restart (found by the fuzzer).
+                    size_t skip = 0;
+                    for (size_t j = 1; j < q.size() && !skip; ++j) {
+                        for (const auto& l : local) {
+                            if (l.key == it->first && l.branch != 0xFFFFFFFF && l.branch == q[j].branch && !l.busy) {
+                                skip = j;
+                                break;
+                            }
+                        }
+                    }
+                    if (skip) {
+                        last_[it->first] = q[skip].branch;
+                        for (size_t j = 0; j <= skip; ++j) {
+                            ++(q.front().sent_ms ? c_.applied : c_.reached_alone);
+                            q.pop_front();
+                            --size_;
+                        }
+                        continue;
+                    }
                 }
                 if (now_ms - e.received_ms > s_.expire_ms) {
                     ++c_.expired;

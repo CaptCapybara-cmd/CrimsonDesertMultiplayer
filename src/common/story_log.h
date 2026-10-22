@@ -55,6 +55,7 @@ public:
         return true;
     }
     uint32_t last() const { return last_; }
+    uint32_t id() const { return id_; }
     uint64_t duplicates() const { return duplicates_; }
 
 private:

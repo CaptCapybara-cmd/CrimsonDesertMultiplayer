@@ -129,6 +129,7 @@ Config load_config(const std::wstring& ini_path) {
     c.overlay_english = read_string(ini_path, L"overlay", L"language", "en") != L"es";
     c.sniffer_enabled = read_uint(ini_path, L"sniffer", L"enabled", 1) != 0;
     c.sniffer_record = read_uint(ini_path, L"sniffer", L"record", 0) != 0;  // only when asked for
+    c.sniffer_flight = read_uint(ini_path, L"sniffer", L"flight", 0) != 0;
     c.dev_clone_hotkeys = read_uint(ini_path, L"dev", L"clone_hotkeys", 0) != 0;
     c.dev_mirror_delay_ms = std::min(read_uint(ini_path, L"dev", L"mirror_delay_ms", 300), 5000u);
     c.dev_mirror_offset_m = read_metres(ini_path, L"dev", L"mirror_offset_m", c.dev_mirror_offset_m);

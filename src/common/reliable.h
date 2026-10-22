@@ -34,6 +34,7 @@ public:
     static constexpr size_t kMaxQueued = 2048;    // fragments waiting for the window (~2.2 MB)
     static constexpr size_t kMaxPartials = 64;    // incomplete messages held by the receiver
     static constexpr uint32_t kMaxAhead = 4096;   // messages a fragment may be ahead of the next one due
+    static constexpr uint32_t kSwitchQuietMs = 1000;  // see on_data
     // What the receiver holds for messages it cannot deliver yet (partial, or
     // complete but waiting for an earlier one). A peer that never sends the
     // next message due could otherwise fill memory with complete later ones
@@ -60,7 +61,14 @@ public:
 
     // Acknowledges the fragment when it is kept, and returns the messages it
     // made deliverable, in order (often none, sometimes several).
-    std::vector<Message> on_data(const proto::RelData& data);
+    // With `now_ms`, a stream we have not seen replaces the current one only when
+    // the current one has been quiet for kSwitchQuietMs: right after a reset the
+    // receiver may adopt the sender's NEW stream first and then get a late packet of
+    // the sender's previous, dead stream; switching to it threw away fragments of the
+    // new stream that were already acknowledged, so they were never sent again (found
+    // by the fuzzer, tests/fuzz: two reconnects 20 ms apart lost every message). A
+    // refused fragment is not acknowledged: a live sender resends it.
+    std::vector<Message> on_data(const proto::RelData& data, std::optional<uint32_t> now_ms = std::nullopt);
 
     // Forget everything (new connection); outgoing messages start a new stream.
     void reset();
@@ -92,6 +100,7 @@ private:
     // Receiving side.
     uint32_t rx_stream_ = 0;
     uint32_t rx_next_ = 0;                  // the next message id to deliver
+    uint32_t rx_last_ms_ = 0;               // when the current stream last sent us something
     std::set<uint32_t> old_streams_;        // streams we moved away from: their stragglers are ignored
     std::deque<uint32_t> old_order_;        // the same, oldest first (the oldest is forgotten first)
     size_t held_bytes_ = 0;                 // chunk bytes in incoming_ and ready_

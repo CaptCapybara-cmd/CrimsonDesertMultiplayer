@@ -106,6 +106,8 @@ add_library(cdmp_mod SHARED
     src/mod/net/stage_force_test.cpp
     src/mod/net/mission_watch.cpp
     src/mod/net/quest_rng.cpp
+    src/mod/net/flight.cpp
+    third_party/cofr/cofr.cpp
     src/mod/net/quest_share.cpp
     src/mod/net/stage_replay.cpp
     src/mod/net/stage_tracker.cpp
@@ -127,7 +129,7 @@ add_library(cdmp_mod SHARED
 )
 cdmp_strict(cdmp_mod)
 target_link_libraries(cdmp_mod PRIVATE cdmp_common imgui safetyhook::safetyhook)
-target_include_directories(cdmp_mod PRIVATE ${CMAKE_BINARY_DIR}/generated)
+target_include_directories(cdmp_mod PRIVATE ${CMAKE_BINARY_DIR}/generated third_party/cofr)
 set_target_properties(cdmp_mod PROPERTIES OUTPUT_NAME "cdmp" PREFIX "" SUFFIX ".asi")
 # Only the symbol file's name goes into cdmp.asi, not the path of the PC that
 # built it (it named the user's folders).

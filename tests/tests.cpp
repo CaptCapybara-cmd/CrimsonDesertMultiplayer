@@ -532,6 +532,29 @@ void test_reliable_order_and_streams() {
     CHECK(fresh.size() == 1 && fresh[0].bytes[0] == 3);
     CHECK(f.on_data(old_second).empty());  // straggler of the old stream
 
+    // Found by the fuzzer: two reconnects close together. The receiver resets and first sees the
+    // sender's NEW stream (a later message, so it waits), then a late packet of the sender's
+    // previous stream that it never saw. It must stay on the new stream: switching threw away the
+    // new stream's fragments it had already acknowledged, and they were never sent again.
+    {
+        std::vector<proto::Body> w1, w2, acks;
+        ReliableChannel s1([&](proto::Body x) { w1.push_back(std::move(x)); });
+        CHECK(s1.send(proto::RelKind::Story, {0xA1}, 0));                    // previous stream, in flight
+        ReliableChannel s2([&](proto::Body x) { w2.push_back(std::move(x)); }); // the sender after its reset
+        CHECK(s2.send(proto::RelKind::Story, {0xB1}, 0) && s2.send(proto::RelKind::Story, {0xB2}, 0));
+        ReliableChannel r([&](proto::Body x) { acks.push_back(std::move(x)); });
+        CHECK(r.on_data(std::get<proto::RelData>(w2[1]), 7000).empty());   // B2 first: kept, acknowledged
+        CHECK(r.on_data(std::get<proto::RelData>(w1[0]), 7100).empty());   // A's straggler: refused
+        auto got = r.on_data(std::get<proto::RelData>(w2[0]), 7200);       // B1: B1 and B2 delivered
+        CHECK(got.size() == 2 && got[0].bytes[0] == 0xB1 && got[1].bytes[0] == 0xB2);
+        // A stream that really replaced the current one (quiet for kSwitchQuietMs) is taken.
+        ReliableChannel s3([&](proto::Body x) { w1.push_back(std::move(x)); });
+        CHECK(s3.send(proto::RelKind::Story, {0xC1}, 0));
+        CHECK(r.on_data(std::get<proto::RelData>(w1.back()), 7200 + ReliableChannel::kSwitchQuietMs - 1).empty());
+        got = r.on_data(std::get<proto::RelData>(w1.back()), 7200 + ReliableChannel::kSwitchQuietMs);
+        CHECK(got.size() == 1 && got[0].bytes[0] == 0xC1);
+    }
+
     // The window: never more than kWindow fragments in flight.
     wire.clear();
     ReliableChannel g([&](proto::Body x) { wire.push_back(std::move(x)); });
@@ -1133,6 +1156,29 @@ void test_stage_sync_queue() {
     // An instance on some other branch is not chained to.
     CHECK(q.tick({{0x1A1, 0xF475E, 1, 9}}, 9260).empty() && q.pending() == 1);
     CHECK(q.tick({{0x1A1, 0xF475E, 1, 3}}, 9270).empty() && q.pending() == 0);
+    // Found by the fuzzer: a guest that restarted mid-scene gets the whole log again with a fresh
+    // queue; its stage already sits on the second branch: it resumes from there, not from the top.
+    {
+        StageSyncQueue fresh;
+        for (uint32_t b : {6u, 0u, 3u, 1u}) CHECK(fresh.push({0xF475E, b, 0}, 20000));
+        auto r = fresh.tick({{0x1B0, 0xF475E, 2, 0}}, 20010);  // on branch 0, mid-scene
+        CHECK(r.size() == 1 && r[0].branch == 3 && r[0].instance == 0x1B0 && fresh.counters().reached_alone == 2);
+        // The host loaded an older save mid-scene and plays it again from the top while this
+        // guest's stage is on branch 3 (it chained 6, 0, 3 before): it takes the host's 1.
+        StageSyncQueue again;
+        for (uint32_t b : {6u, 0u, 3u}) CHECK(again.push({0xF475E, b, 0}, 30000));
+        CHECK(again.tick({{0x1C0, 0xF475E, 0, kNone}}, 30010).size() == 1);
+        CHECK(again.tick({{0x1C0, 0xF475E, 1, 6}}, 30020).size() == 1);
+        CHECK(again.tick({{0x1C0, 0xF475E, 2, 0}}, 30030).size() == 1);
+        CHECK(again.tick({{0x1C0, 0xF475E, 7, 3}}, 30040).empty() && again.pending() == 0);
+        for (uint32_t b : {6u, 0u, 3u, 1u}) CHECK(again.push({0xF475E, b, 0}, 40000));
+        r = again.tick({{0x1C0, 0xF475E, 7, 3}}, 40010);
+        CHECK(r.size() == 1 && r[0].branch == 1);
+        // ... and after a finished scene (idle on its last branch) nothing is sent again.
+        StageSyncQueue done;
+        for (uint32_t b : {6u, 0u, 3u, 1u}) CHECK(done.push({0xF475E, b, 0}, 20000));
+        CHECK(done.tick({{0x1B0, 0xF475E, 0, 1}}, 20010).empty() && done.pending() == 0 && done.counters().reached_alone == 4);
+    }
     // A scene's last branch can leave the stage idle (state 0) on it: done once we sent it.
     const uint32_t applied_before = q.counters().applied;
     CHECK(q.push({0xF475E, 1, 0}, 9280));

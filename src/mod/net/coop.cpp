@@ -19,6 +19,7 @@
 #include "mod/net/puppet_minimap.h"
 #include "mod/net/remote_puppet.h"
 #include "mod/net/puppet_motion.h"
+#include "mod/net/flight.h"
 #include "mod/net/quest_share.h"
 #include "mod/net/stage_sync.h"
 #include "mod/net/time_sync.h"
@@ -164,6 +165,12 @@ void CoopLink::update(const std::optional<proto::Vec3>& local_pos, const proto::
     {
         const bool host = session_.role() == ClientSession::Role::Responder;
         const bool echo = partner_.rfind("cdmp_peer", 0) == 0;
+        // The shared story's digest: host by its log, guest by what it applied (both, through cdmp_peer).
+        if (host || echo) {
+            flight_tick(now_ms, story_.id(), story_.entries().empty() ? 0 : story_.entries().back().seq);
+        } else {
+            flight_tick(now_ms, story_rx_.id(), story_rx_.last());
+        }
         if (story_resend_ && connected && g_ready && (host || echo)) {
             for (const auto& e : story_.entries()) {
                 session_.send_reliable(proto::RelKind::Story, proto::encode_story(e), now_ms);
@@ -465,6 +472,7 @@ bool CoopLink::accepts(proto::EventKind kind) const {
 
 void CoopLink::share_story(proto::RelKind kind, std::vector<uint8_t> bytes, uint32_t now_ms) {
     const auto e = story_.append(kind, std::move(bytes));
+    flight_story_captured(e);
     session_.send_reliable(proto::RelKind::Story, proto::encode_story(e), now_ms);
 }
 
@@ -609,6 +617,7 @@ void CoopLink::on_reliable(const ReliableChannel::Message& msg, uint32_t now_ms)
         if (!e) {
             log::warn("Co-op: malformed story entry ({} bytes) ignored", msg.bytes.size());
         } else if (story_rx_.accept(*e)) {
+            flight_story_applied(*e);
             if (e->kind == proto::RelKind::StageBranch) stage_sync_on_message(e->bytes, now_ms);
             else quest_share_on_message(e->bytes);
         }

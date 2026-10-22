@@ -30,6 +30,7 @@
 #include "mod/net/piece4_test.h"
 #include "mod/net/stage_force_test.h"
 #include "mod/net/stage_replay.h"
+#include "mod/net/flight.h"
 #include "mod/net/quest_share.h"
 #include "mod/net/stage_sync.h"
 #include "mod/test_input.h"
@@ -246,10 +247,13 @@ void run_network(const Config& cfg, LocalSource& local) {
     log::info("Network: {} as {}; peer {}", transport->status(), host ? "host" : "guest",
               peer ? peer->str() : (host ? "= whoever connects" : "= the only friend playing"));
 
+    net::flight_configure(cfg.sniffer_flight, dir_of(module_path(g_self)), host, cfg.player_name);
     ClientSession session(
         cfg.player_name, kModBuild,
         [&](const std::vector<uint8_t>& bytes) {
-            if (peer) transport->send(*peer, bytes);
+            if (!peer) return;
+            net::flight_net_out(bytes.data(), bytes.size());
+            transport->send(*peer, bytes);
         },
         [](const std::string& text) { log::info("Session: {}", text); },
         host ? ClientSession::Role::Responder : ClientSession::Role::Initiator);
@@ -316,7 +320,10 @@ void run_network(const Config& cfg, LocalSource& local) {
                     log::info("Network: player at {} is joining", from.str());
                 }
             }
-            if (peer && from == *peer) session.on_datagram({buf.data(), *n}, now_ms());
+            if (peer && from == *peer) {
+                net::flight_net_in(buf.data(), *n);
+                session.on_datagram({buf.data(), *n}, now_ms());
+            }
         }
 
         const uint32_t now = now_ms();
@@ -364,7 +371,10 @@ void run_network(const Config& cfg, LocalSource& local) {
         }
 
         const bool mark_down = (GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState(VK_F12) & 0x8000);
-        if (mark_down && !mark_was_down) log::warn("=== MARK {} (Ctrl+F12) ===", ++marks);
+        if (mark_down && !mark_was_down) {
+            log::warn("=== MARK {} (Ctrl+F12) ===", ++marks);
+            net::flight_dump(std::format("Ctrl+F12 mark {}", marks).c_str());
+        }
         mark_was_down = mark_down;
         if (now - last_report >= 5000) {
             last_report = now;
@@ -394,6 +404,7 @@ void run_network(const Config& cfg, LocalSource& local) {
         }
     }
 
+    net::flight_dump("shutdown");
     coop.reset();
     session.disconnect(now_ms());
     transport.reset();
