@@ -20,3 +20,5 @@ dist/
 captures/
 cdmp_packets_*
 cdmp_learnt.txt
+build-x/
+build-fuzz/

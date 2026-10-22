@@ -114,8 +114,9 @@ std::vector<proto::StageBranchMsg> stage_sync_tick(bool linked, bool host, bool 
     // A loading screen: stage instance ids are reused in the next world.
     const bool loading = sniffer_world_loading();
     if (loading && !g_was_loading) {
+        // Runtime instance ids are reused in the next world; the queue names stages by static
+        // key and stays (clearing it lost the host's branches: found by the fuzzer, tests/fuzz).
         stage_tracker_reset();
-        g_queue.clear();
         g_in_world_since = 0;
     }
     g_was_loading = loading;

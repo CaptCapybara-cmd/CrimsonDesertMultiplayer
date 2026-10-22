@@ -4,6 +4,8 @@
 // and drives the other player's character (remote_puppet.h) from theirs.
 // Lives on the network thread (run_network in mod.cpp).
 
+#include <windows.h>
+
 #include <cstdint>
 #include <deque>
 #include <map>
@@ -16,6 +18,7 @@
 #include "common/client_session.h"
 #include "common/clock_mapper.h"
 #include "common/protocol.h"
+#include "common/story_log.h"
 
 namespace cdmp::net {
 
@@ -72,6 +75,12 @@ private:
     std::deque<std::vector<uint8_t>> held_enemy_spawns_;  // EnemySpawns that came while we were out of the world
     std::string partner_;  // who the relay says is on the other side
     uint32_t epoch_ = 0;   // session epoch the partner state belongs to
+    // The host's shared story (stage branches, quest accepts), numbered; sent again on every new
+    // link (a reconnection resets the reliable channel). The guest applies each number once.
+    StoryLog story_{static_cast<uint32_t>(GetTickCount64() * 2654435761u) ^ GetCurrentProcessId()};
+    StoryReceiver story_rx_;
+    bool story_resend_ = false;
+    void share_story(proto::RelKind kind, std::vector<uint8_t> bytes, uint32_t now_ms);
 
     std::mutex outbox_mutex_;  // filled on the sniffer's writer thread
     std::vector<proto::GameEvent> outbox_;

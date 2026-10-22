@@ -1,10 +1,27 @@
 #include "common/protocol.h"
 
 #include <cmath>
+#include <array>
 #include <cstring>
 
 namespace cdmp::proto {
 namespace {
+
+// CRC-32 (IEEE 802.3, reflected, as zlib's crc32).
+uint32_t crc32(std::span<const uint8_t> b) {
+    static const auto table = [] {
+        std::array<uint32_t, 256> t{};
+        for (uint32_t i = 0; i < 256; ++i) {
+            uint32_t c = i;
+            for (int k = 0; k < 8; ++k) c = (c & 1) ? 0xEDB88320u ^ (c >> 1) : c >> 1;
+            t[i] = c;
+        }
+        return t;
+    }();
+    uint32_t c = 0xFFFFFFFFu;
+    for (uint8_t v : b) c = table[(c ^ v) & 0xFF] ^ (c >> 8);
+    return c ^ 0xFFFFFFFFu;
+}
 
 class Writer {
 public:
@@ -206,11 +223,27 @@ std::vector<uint8_t> encode(const Packet& packet) {
         }
     };
     std::visit(BodyWriter{w}, packet.body);
-    return w.take();
+    auto out = w.take();
+    const uint32_t crc = crc32(out);
+    const auto* c = reinterpret_cast<const uint8_t*>(&crc);
+    out.insert(out.end(), c, c + 4);
+    return out;
 }
 
 std::optional<Packet> decode(std::span<const uint8_t> bytes) {
     if (bytes.size() < kHeaderSize || bytes.size() > kMaxPacketSize) return std::nullopt;
+    // This version's datagrams end in a CRC-32 of everything before it; a datagram that does
+    // not match is dropped (the reliable layer resends). Another version's Hello/Welcome is
+    // read without it, to tell the player which version the other side runs.
+    uint16_t version_field = 0;
+    std::memcpy(&version_field, bytes.data() + 4, 2);
+    if (version_field == kVersion) {
+        if (bytes.size() < kHeaderSize + 4) return std::nullopt;
+        uint32_t want = 0;
+        std::memcpy(&want, bytes.data() + bytes.size() - 4, 4);
+        bytes = bytes.first(bytes.size() - 4);
+        if (crc32(bytes) != want) return std::nullopt;
+    }
 
     Reader r(bytes);
     if (r.u32() != kMagic) return std::nullopt;
@@ -453,6 +486,32 @@ std::optional<QuestAcceptMsg> decode_quest_accept(std::span<const uint8_t> bytes
     }
     if (!r.ok() || !r.at_end() || m.npc_key == 0) return std::nullopt;
     return m;
+}
+
+std::vector<uint8_t> encode_story(const StoryEntry& e) {
+    Writer w;
+    w.u32(e.log_id);
+    w.u32(e.seq);
+    w.u8(static_cast<uint8_t>(e.kind));
+    const size_t n = e.bytes.size() < kMaxStoryBytes ? e.bytes.size() : kMaxStoryBytes;
+    w.u16(static_cast<uint16_t>(n));
+    w.bytes({e.bytes.data(), n});
+    return w.take();
+}
+
+std::optional<StoryEntry> decode_story(std::span<const uint8_t> bytes) {
+    Reader r(bytes);
+    StoryEntry e;
+    e.log_id = r.u32();
+    e.seq = r.u32();
+    const uint8_t k = r.u8();
+    const uint16_t n = r.u16();
+    if (n > kMaxStoryBytes) return std::nullopt;
+    e.bytes = r.bytes(n);
+    if (!r.ok() || !r.at_end() || e.log_id == 0 || e.seq == 0) return std::nullopt;
+    if (k != static_cast<uint8_t>(RelKind::StageBranch) && k != static_cast<uint8_t>(RelKind::QuestAccept)) return std::nullopt;
+    e.kind = static_cast<RelKind>(k);
+    return e;
 }
 
 std::optional<StageBranchMsg> decode_stage_branch(std::span<const uint8_t> bytes) {

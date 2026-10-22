@@ -19,6 +19,7 @@
 #include "common/mission_rows.h"
 #include "common/move_thinner.h"
 #include "common/quest_accept.h"
+#include "common/story_log.h"
 #include "common/stage_sync.h"
 #include "common/equip_state.h"
 #include "common/field_time.h"
@@ -1265,7 +1266,22 @@ void test_accept_detector() {
     // An NPC we could not name is not shared.
     d.on_answer(m.answer, 0, 4000);
     d.on_mission(0xFFFFF7F8, 2, 5, 4010);
+    d.on_mission(0xFFFFF7F7, 0, 2, 4010);
     CHECK(!d.tick(4401) && d.other() == 2);
+    // Found by the fuzzer: a refused hand-in (nothing removed) and an unrelated row change in its
+    // window is not an accept: an accept adds rows.
+    d.on_answer(m.answer, 0x01C29010, 5000);
+    d.on_mission(0x0F5001, 1, 2, 5284);
+    CHECK(!d.tick(5401) && d.other() == 3 && d.accepts() == 1);
+    // Found by the fuzzer: an accept, then another answer before its window is over (a refused
+    // hand-in): the accept is still shared, and the second answer is judged on its own.
+    d.on_answer(m.answer, 0x01C29010, 6000);
+    d.on_mission(0xFFFFF7F8, 2, 5, 6017);
+    d.on_mission(0xFFFFF7F7, 0, 2, 6017);
+    d.on_answer(m.answer, 0x01C29011, 6300);
+    a = d.tick(6401);
+    CHECK(a && a->npc_key == 0x01C29010 && a->steps.size() == 2 && !d.tick(6401) && !d.idle());
+    CHECK(!d.tick(6701) && d.other() == 4 && d.idle());
 }
 
 void test_guest_accept_queue() {
@@ -1303,23 +1319,107 @@ void test_guest_accept_queue() {
     CHECK(q.tick(w, 2100).empty() && q.pending() == 0 && q.counters().accepted == 1);
     // The same accept again (echo, or the guest did it alone): already there, nothing sent.
     CHECK(q.push(m, 3000) && q.tick(w, 3100).empty() && q.counters().already == 1);
+    // A row outside the quest that moved on its own here (at the host's "after" kind) does not block.
+    {
+        auto m2 = m;
+        m2.steps.push_back({0x0F5001, 1, 2});
+        GuestAcceptQueue q2;
+        std::map<uint32_t, int> r2{{0xFFFFF7F8, 2}, {0x0F5001, 2}};
+        GuestAcceptQueue::World w2 = w;
+        w2.mission_kind = [&](uint32_t key) {
+            const auto it = r2.find(key);
+            return it == r2.end() ? -1 : it->second;
+        };
+        CHECK(q2.push(m2, 0));
+        size_t n = 0;
+        for (uint32_t t = 0; t < 2000; t += 50) n += q2.tick(w2, t).size();
+        CHECK(n == 5);
+        r2 = {{0xFFFFF7F8, 5}, {0xFFFFF7F7, 2}, {0xFFFFF7F6, 2}, {0x0F5001, 2}};
+        CHECK(q2.tick(w2, 2100).empty() && q2.counters().accepted == 1);
+    }
     // Not in the host's "before" state (the guest is elsewhere in the story): wait, then give up.
     rows = {{0xFFFFF7F8, 1}};
     CHECK(q.push(m, 4000) && q.tick(w, 4100).empty() && q.pending() == 1);
     CHECK(q.tick(w, 4000 + 10 * 60 * 1000 + 1).empty() && q.counters().expired == 1 && q.counters().sent == 1);
-    // Sent but the server did not do it: failed after verify_ms, never sent twice.
+    // Sent but the server did not do it: tried again (max_attempts in all), then failed.
     rows = {{0xFFFFF7F8, 2}};
     CHECK(q.push(m, 700000));
     sent.clear();
-    for (uint32_t t = 700000; t < 702000; t += 50) {
+    for (uint32_t t = 700000; t < 760000; t += 50) {
         for (auto& d : q.tick(w, t)) sent.push_back(d);
     }
-    CHECK(sent.size() == 5);
-    for (uint32_t t = 702000; t < 713000; t += 500) CHECK(q.tick(w, t).empty());
-    CHECK(q.counters().failed == 1 && q.counters().sent == 2 && q.pending() == 0);
+    CHECK(sent.size() == 15 && q.counters().retried == 2 && q.counters().failed == 1 && q.counters().sent == 4 &&
+          q.pending() == 0);
+    // Found by the fuzzer: the NPC unloads between the opening and the answer (the guest walked
+    // past): the conversation is closed, nothing is answered, and the accept waits for the NPC again.
+    CHECK(q.push(m, 800000));
+    sent.clear();
+    for (auto& d : q.tick(w, 800000)) sent.push_back(d);  // opens (player)
+    for (auto& d : q.tick(w, 800200)) sent.push_back(d);  // opens (NPC)
+    npc = 0;                                              // gone
+    for (auto& d : q.tick(w, 800400)) sent.push_back(d);
+    CHECK(sent.size() == 4 && sent[2].payload[4] == 0 && sent[3].payload[4] == 0 && sent[2].op == 2621 && sent[3].op == 2621);
+    CHECK(q.counters().interrupted == 1 && q.pending() == 1);
+    npc = 0xB01001C9;                                     // back, with a new id
+    sent.clear();
+    for (uint32_t t = 801000; t < 803000; t += 50) {
+        for (auto& d : q.tick(w, t)) sent.push_back(d);
+    }
+    std::memcpy(&id, sent[2].payload.data(), 4);
+    CHECK(sent.size() == 5 && id == 0xB01001C9);
+    rows = {{0xFFFFF7F8, 5}, {0xFFFFF7F7, 2}, {0xFFFFF7F6, 2}};
+    CHECK(q.tick(w, 803100).empty() && q.pending() == 0);
     // Bounded.
     GuestAcceptQueue small(GuestAcceptQueue::Settings{600000, 10000, 200, 1});
     CHECK(small.push(m, 0) && !small.push(m, 0) && small.counters().refused == 1);
+}
+
+void test_datagram_crc() {
+    // Every single-bit flip of a datagram is refused (CRC-32 since protocol 12; found by the fuzzer).
+    proto::Packet p;
+    p.seq = 7;
+    p.send_ms = 1234;
+    p.body = proto::RelData{0x11, 0x22, 0, 1, proto::RelKind::Story,
+                            proto::encode_story({0x1234, 5, proto::RelKind::StageBranch, proto::encode_stage_branch({0xF475E, 0, 0})})};
+    const auto b = proto::encode(p);
+    CHECK(proto::decode(b).has_value());
+    size_t refused = 0;
+    for (size_t i = 0; i < b.size() * 8; ++i) {
+        auto c = b;
+        c[i / 8] ^= static_cast<uint8_t>(1u << (i % 8));
+        refused += !proto::decode(c).has_value();
+    }
+    CHECK(refused == b.size() * 8);
+    // Without its 4 last bytes it is refused too.
+    CHECK(!proto::decode({b.data(), b.size() - 4}));
+}
+
+void test_story_log() {
+    StoryLog log(0x1234);
+    const auto a = log.append(proto::RelKind::StageBranch, proto::encode_stage_branch({0xF475E, 6, 0}));
+    const auto b = log.append(proto::RelKind::QuestAccept, proto::encode_quest_accept(renee_accept()));
+    CHECK(a.seq == 1 && b.seq == 2 && a.log_id == 0x1234 && log.entries().size() == 2);
+    // Wire round trip and refusals.
+    const auto w = proto::encode_story(b);
+    const auto d = proto::decode_story(w);
+    CHECK(d && d->seq == 2 && d->kind == proto::RelKind::QuestAccept && d->bytes == b.bytes);
+    for (size_t n = 0; n < w.size(); ++n) CHECK(!proto::decode_story({w.data(), n}));
+    auto bad = w;
+    bad[8] = static_cast<uint8_t>(proto::RelKind::Spawn);
+    CHECK(!proto::decode_story(bad));
+    bad = w;
+    std::memset(bad.data() + 4, 0, 4);  // seq 0
+    CHECK(!proto::decode_story(bad));
+    // The guest applies each number once; the whole log again after a reconnection changes nothing.
+    StoryReceiver rx;
+    CHECK(rx.accept(a) && rx.accept(b));
+    for (const auto& e : log.entries()) CHECK(!rx.accept(e));
+    CHECK(rx.duplicates() == 2 && rx.last() == 2);
+    const auto c = log.append(proto::RelKind::StageBranch, proto::encode_stage_branch({0xF475E, 0, 0}));
+    CHECK(rx.accept(c));
+    // A restarted host (new log id) starts over.
+    StoryLog fresh(0x9999);
+    CHECK(rx.accept(fresh.append(proto::RelKind::StageBranch, proto::encode_stage_branch({0xF475E, 6, 0}))));
 }
 
 void test_enemy_zone_message() {
@@ -1367,7 +1467,7 @@ void test_enemy_zone_message() {
     CHECK(!proto::decode_enemy_zone(many));
     CHECK(!proto::decode_enemy_zone({}));
     // The session hands kinds up to 9 (StageBranch) to the game; a newer kind is dropped.
-    static_assert(proto::kMaxRelKind == static_cast<uint8_t>(proto::RelKind::QuestAccept));
+    static_assert(proto::kMaxRelKind == static_cast<uint8_t>(proto::RelKind::Story));
 }
 
 void test_enemy_zone_machine() {
@@ -1644,6 +1744,8 @@ int main() {
     test_quest_accept_message();
     test_accept_detector();
     test_guest_accept_queue();
+    test_story_log();
+    test_datagram_crc();
     test_enemy_zone_machine();
     if (g_failures == 0) std::printf("All tests passed\n");
     return g_failures == 0 ? 0 : 1;

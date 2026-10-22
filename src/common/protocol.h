@@ -6,6 +6,10 @@
 // layout never depends on compiler packing.
 //
 // Header: magic u32 | version u16 | type u8 | reserved u8 | seq u32 | send_ms u32
+// Since version 12 every datagram ends in a CRC-32 (zlib's) of all bytes before it:
+// the fuzzer (tests/fuzz) showed one flipped bit turning a stage branch into a made-up
+// branch number (which crashes the game) and a story sequence number into one that hid
+// every later entry.
 
 #include <bit>
 #include <cstddef>
@@ -29,8 +33,10 @@ inline constexpr uint32_t kMagic = 0x504D4443;  // bytes "CDMP"
 // (equip_state.h); a v6 peer would lose them. 8: TimeSync events. 9: EnemyZone
 // (the guest hides its own enemies near the host, who relays them all). 10:
 // StageBranch (the host's quest stage branches, replayed by the guest). 11:
-// QuestAccept (the host's accept of a quest, replayed by the guest).
-inline constexpr uint16_t kVersion = 11;
+// QuestAccept (the host's accept of a quest, replayed by the guest). 12: Story
+// (both, numbered in the host's story log and resent after a reconnection), and a
+// CRC-32 at the end of every datagram.
+inline constexpr uint16_t kVersion = 12;
 // Hello and Welcome start the same in every version from 5 (name, then the
 // rest), so a peer with another version is recognised and reported instead
 // of being ignored in silence.
@@ -98,8 +104,9 @@ enum class RelKind : uint8_t {
     EnemyZone = 8,    // EnemyZoneMsg: the guest's enemy zone and the host's answer
     StageBranch = 9,  // StageBranchMsg: a quest stage branch the host's game chose (stage_sync.h)
     QuestAccept = 10, // QuestAcceptMsg: a quest the host accepted from an NPC (quest_accept.h)
+    Story = 11,       // StoryEntry: a StageBranch or QuestAccept numbered in the host's story log (story_log.h)
 };
-inline constexpr uint8_t kMaxRelKind = 10;  // newer kinds are acknowledged and dropped
+inline constexpr uint8_t kMaxRelKind = 11;  // newer kinds are acknowledged and dropped
 
 // In a sender's enemy messages, the receiver itself (the sender's copy of
 // the receiver, 0xA010F001 there; the receiver's own player key is not
@@ -279,5 +286,19 @@ std::vector<uint8_t> encode_quest_accept(const QuestAcceptMsg& msg);
 // nullopt for npc_key 0, an answer shorter than 4 bytes or longer than kMaxAcceptAnswer,
 // no steps or more than kMaxAcceptSteps, a step key 0, or any byte too many or few.
 std::optional<QuestAcceptMsg> decode_quest_accept(std::span<const uint8_t> bytes);
+
+// One entry of the host's story log (common/story_log.h).
+// Wire: u32 log_id | u32 seq | u8 kind (StageBranch or QuestAccept) | u16 n | bytes[n].
+struct StoryEntry {
+    uint32_t log_id = 0;
+    uint32_t seq = 0;
+    RelKind kind = RelKind::StageBranch;
+    std::vector<uint8_t> bytes;
+};
+inline constexpr size_t kMaxStoryBytes = 1024;
+std::vector<uint8_t> encode_story(const StoryEntry& e);
+// nullopt for log_id or seq 0, a kind other than StageBranch/QuestAccept, more than
+// kMaxStoryBytes, or any byte too many or few. The inner bytes are not decoded here.
+std::optional<StoryEntry> decode_story(std::span<const uint8_t> bytes);
 
 }  // namespace cdmp::proto

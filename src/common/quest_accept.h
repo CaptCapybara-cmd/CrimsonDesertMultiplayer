@@ -7,15 +7,25 @@
 // the accept. Coop-anything games/crimson-desert/NOTES.md 2026-10-20.
 //
 // Host: the game answers a quest dialog (QuestDialogEndReq). Within window_ms the
-// server either removes items (a hand-in: dropped) or changes mission rows without
-// removing anything (an accept: shared, with the rows it changed).
+// server either removes items (a hand-in: dropped) or, without removing anything,
+// ADDS mission rows (an accept: shared, with every row it changed). An answer that
+// only changes existing rows is not an accept: the fuzzer (tests/fuzz) found that a
+// refused hand-in followed by unrelated progress was shared as an "accept".
 //
 // Guest: per accept, oldest first, wait until
 //   - the NPC (by static key) is loaded here and we know our own player id, and
-//   - every step's mission row has the host's "before" kind here (0 = no row);
+//   - every row the accept added does not exist here yet, and every row it changed
+//     is at the host's "before" or "after" kind here (rows outside the quest may have
+//     moved on their own);
 // then open the conversation, answer, close it (the game's own order), and check
-// that every row reaches the host's "after" kind. Already there: done without
-// sending. Never ready within expire_ms: given up. Each accept is sent at most once.
+// that every added row now exists with the host's "after" kind. Already so: done
+// without sending. Never ready within expire_ms: given up.
+// The NPC can unload while the conversation is under way (the guest walks past it):
+// before each message the NPC must still be loaded with the same id, else the
+// conversation is closed and the accept waits again. A refused attempt (no change
+// within verify_ms) is tried again later, up to max_attempts; the checks above run
+// again before every attempt, and a refused accept changed nothing. Both found by the
+// fuzzer (tests/fuzz).
 
 #include <cstddef>
 #include <cstdint>
@@ -38,38 +48,49 @@ public:
     explicit AcceptDetector(Settings s) : s_(s) {}
 
     // The game sent a quest dialog answer; `npc_key` = its NPC's static key (0 = unknown).
+    // Several can wait at once (two answers less than window_ms apart: the fuzzer found the
+    // first one dropped); what follows an answer belongs to the latest one before it.
     void on_answer(const std::vector<uint8_t>& payload, uint32_t npc_key, uint32_t now_ms) {
-        p_ = Pending{payload, npc_key, now_ms, false, {}};
+        if (p_.size() >= kMaxPending) p_.erase(p_.begin());
+        p_.push_back(Pending{payload, npc_key, now_ms, false, {}});
     }
     void on_item_removed(uint32_t now_ms) {
-        if (p_ && now_ms - p_->ms <= s_.window_ms) p_->removed = true;
+        if (Pending* p = latest(now_ms)) p->removed = true;
     }
     // A mission row changed (`before` 0 = new row).
     void on_mission(uint32_t key, uint8_t before, uint8_t after, uint32_t now_ms) {
-        if (!p_ || now_ms - p_->ms > s_.window_ms || before == after) return;
-        for (auto& st : p_->steps) {
+        Pending* p = latest(now_ms);
+        if (!p || before == after) return;
+        for (auto& st : p->steps) {
             if (st.key == key) {
                 st.after = after;
                 return;
             }
         }
-        if (p_->steps.size() < proto::kMaxAcceptSteps) p_->steps.push_back({key, before, after});
+        if (p->steps.size() < proto::kMaxAcceptSteps) p->steps.push_back({key, before, after});
     }
-    // An accept, once its window is over.
+    // The next accept whose window is over (call until nullopt).
     std::optional<proto::QuestAcceptMsg> tick(uint32_t now_ms) {
-        if (!p_ || now_ms - p_->ms <= s_.window_ms) return std::nullopt;
-        std::optional<proto::QuestAcceptMsg> out;
-        if (p_->removed) {
-            ++handins_;
-        } else if (!p_->steps.empty() && p_->npc_key && p_->payload.size() >= 4 &&
-                   p_->payload.size() <= proto::kMaxAcceptAnswer) {
-            out = proto::QuestAcceptMsg{p_->npc_key, p_->payload, p_->steps};
-            ++accepts_;
-        } else {
-            ++other_;
+        while (!p_.empty() && now_ms - p_.front().ms > s_.window_ms) {
+            Pending p = std::move(p_.front());
+            p_.erase(p_.begin());
+            if (p.removed) {
+                ++handins_;
+            } else if (added(p.steps) && p.npc_key && p.payload.size() >= 4 && p.payload.size() <= proto::kMaxAcceptAnswer) {
+                ++accepts_;
+                return proto::QuestAcceptMsg{p.npc_key, std::move(p.payload), std::move(p.steps)};
+            } else {
+                ++other_;
+            }
         }
-        p_.reset();
-        return out;
+        return std::nullopt;
+    }
+    bool idle() const { return p_.empty(); }
+    static bool added(const std::vector<proto::QuestAcceptMsg::Step>& steps) {
+        for (const auto& s : steps) {
+            if (s.before == 0) return true;
+        }
+        return false;
     }
     uint32_t accepts() const { return accepts_; }
     uint32_t handins() const { return handins_; }
@@ -83,8 +104,13 @@ private:
         bool removed;
         std::vector<proto::QuestAcceptMsg::Step> steps;
     };
+    static constexpr size_t kMaxPending = 16;
+    Pending* latest(uint32_t now_ms) {
+        if (p_.empty() || now_ms - p_.back().ms > s_.window_ms) return nullptr;
+        return &p_.back();
+    }
     Settings s_;
-    std::optional<Pending> p_;
+    std::vector<Pending> p_;
     uint32_t accepts_ = 0, handins_ = 0, other_ = 0;
 };
 
@@ -103,9 +129,11 @@ public:
         uint32_t verify_ms = 10000;
         uint32_t gap_ms = 200;                // between the conversation's messages
         size_t max_pending = 32;
+        int max_attempts = 3;
     };
     struct Counters {
-        uint32_t received = 0, refused = 0, sent = 0, accepted = 0, already = 0, failed = 0, expired = 0;
+        uint32_t received = 0, refused = 0, sent = 0, accepted = 0, already = 0, failed = 0, expired = 0, interrupted = 0,
+                 retried = 0;
     };
     // The guest's world, asked each tick.
     struct World {
@@ -132,16 +160,26 @@ public:
         while (!q_.empty()) {
             Item& it = q_.front();
             const auto kind = [&](uint32_t key) { return w.mission_kind ? w.mission_kind(key) : -1; };
-            const auto at = [&](bool after) {
+            // Done: every row the accept added exists with the host's "after" kind.
+            const auto done = [&] {
+                bool any = false;
                 for (const auto& s : it.m.steps) {
-                    const int want = after ? s.after : s.before;
+                    if (s.before != 0) continue;
+                    any = true;
+                    if (kind(s.key) != s.after) return false;
+                }
+                return any;
+            };
+            // Ready: added rows do not exist yet; changed rows are at "before" or "after".
+            const auto ready = [&] {
+                for (const auto& s : it.m.steps) {
                     const int have = kind(s.key);
-                    if (!(have == want || (want == 0 && have < 0))) return false;
+                    if (s.before == 0 ? have >= 0 : (have != s.before && have != s.after)) return false;
                 }
                 return true;
             };
             if (it.phase == Phase::Waiting) {
-                if (at(true)) {
+                if (done()) {
                     ++c_.already;
                     pop();
                     continue;
@@ -152,7 +190,7 @@ public:
                     continue;
                 }
                 const uint32_t npc = w.npc_runtime ? w.npc_runtime(it.m.npc_key) : 0;
-                if (!npc || !w.own_player || !at(false)) break;  // later accepts wait for this one
+                if (!npc || !w.own_player || !ready()) break;  // later accepts wait for this one
                 it.npc = npc;
                 it.phase = Phase::Sending;
                 it.step = 0;
@@ -160,6 +198,15 @@ public:
             }
             if (it.phase == Phase::Sending) {
                 if (now_ms < it.next_ms) break;
+                const uint32_t npc = w.npc_runtime ? w.npc_runtime(it.m.npc_key) : 0;
+                if (it.step < 3 && (npc != it.npc || !ready())) {
+                    // The NPC went away (or the rows moved) before the answer: close what was opened, wait again.
+                    if (it.step >= 1) out.push_back(obstacle(w.own_player, false));
+                    if (it.step >= 2) out.push_back(obstacle(it.npc, false));
+                    ++c_.interrupted;
+                    it.phase = Phase::Waiting;
+                    break;
+                }
                 out.push_back(message(it, w.own_player));
                 it.next_ms = now_ms + s_.gap_ms;
                 if (++it.step == kSteps) {
@@ -170,12 +217,17 @@ public:
                 break;
             }
             if (it.phase == Phase::Verifying) {
-                if (at(true)) {
+                if (done()) {
                     ++c_.accepted;
                     pop();
                     continue;
                 }
                 if (now_ms - it.sent_ms > s_.verify_ms) {
+                    if (++it.attempts < s_.max_attempts) {
+                        ++c_.retried;
+                        it.phase = Phase::Waiting;
+                        continue;
+                    }
                     ++c_.failed;
                     pop();
                     continue;
@@ -200,6 +252,7 @@ private:
         int step = 0;
         uint32_t next_ms = 0;
         uint32_t sent_ms = 0;
+        int attempts = 0;
     };
     // Open (player, NPC), answer, close (player, NPC): the game's own order.
     static constexpr int kSteps = 5;

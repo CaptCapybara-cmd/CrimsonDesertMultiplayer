@@ -119,6 +119,7 @@ void CoopLink::update(const std::optional<proto::Vec3>& local_pos, const proto::
             forget_partner(now_ms);
         }
         ordered_out_ = 0;  // the new partner's channel starts from scratch
+        story_resend_ = true;  // and has none of our story: send it all again
         partner_ = session_.peer_name();
         // Our own copy through cdmp_peer stands where we stand and keeps
         // pushing us (it has collision): walk it beside us instead.
@@ -163,12 +164,21 @@ void CoopLink::update(const std::optional<proto::Vec3>& local_pos, const proto::
     {
         const bool host = session_.role() == ClientSession::Role::Responder;
         const bool echo = partner_.rfind("cdmp_peer", 0) == 0;
+        if (story_resend_ && connected && g_ready && (host || echo)) {
+            for (const auto& e : story_.entries()) {
+                session_.send_reliable(proto::RelKind::Story, proto::encode_story(e), now_ms);
+            }
+            if (!story_.entries().empty()) {
+                log::info("Co-op: sent our story log again ({} entries) to the new link", story_.entries().size());
+            }
+            story_resend_ = false;
+        }
         for (const auto& m : stage_sync_tick(connected && g_ready, host, echo, local_in_world_, now_ms)) {
-            session_.send_reliable(proto::RelKind::StageBranch, proto::encode_stage_branch(m), now_ms);
+            share_story(proto::RelKind::StageBranch, proto::encode_stage_branch(m), now_ms);
         }
         // After the stage branches: the meeting scene goes out before the accept.
         for (const auto& m : quest_share_tick(connected && g_ready, host, echo, local_in_world_)) {
-            session_.send_reliable(proto::RelKind::QuestAccept, proto::encode_quest_accept(m), now_ms);
+            share_story(proto::RelKind::QuestAccept, proto::encode_quest_accept(m), now_ms);
         }
     }
     if (!connected || !g_ready) return;
@@ -453,6 +463,11 @@ bool CoopLink::accepts(proto::EventKind kind) const {
     }
 }
 
+void CoopLink::share_story(proto::RelKind kind, std::vector<uint8_t> bytes, uint32_t now_ms) {
+    const auto e = story_.append(kind, std::move(bytes));
+    session_.send_reliable(proto::RelKind::Story, proto::encode_story(e), now_ms);
+}
+
 bool CoopLink::accepts(proto::RelKind kind) const {
     if (!strict_roles_) return true;
     const bool host = session_.role() == ClientSession::Role::Responder;
@@ -462,6 +477,7 @@ bool CoopLink::accepts(proto::RelKind kind) const {
         case proto::RelKind::EnemyState:
         case proto::RelKind::StageBranch:  // only the host's game chooses for both
         case proto::RelKind::QuestAccept:  // the guest's own accepts stay its own
+        case proto::RelKind::Story:
             return !host;
         default:
             return true;
@@ -588,6 +604,14 @@ void CoopLink::on_reliable(const ReliableChannel::Message& msg, uint32_t now_ms)
         stage_sync_on_message(msg.bytes, now_ms);
     } else if (msg.kind == proto::RelKind::QuestAccept) {
         quest_share_on_message(msg.bytes);
+    } else if (msg.kind == proto::RelKind::Story) {
+        const auto e = proto::decode_story(msg.bytes);
+        if (!e) {
+            log::warn("Co-op: malformed story entry ({} bytes) ignored", msg.bytes.size());
+        } else if (story_rx_.accept(*e)) {
+            if (e->kind == proto::RelKind::StageBranch) stage_sync_on_message(e->bytes, now_ms);
+            else quest_share_on_message(e->bytes);
+        }
     } else if (msg.kind == proto::RelKind::Despawn && msg.bytes.size() >= 4) {
         uint32_t gen = 0;
         std::memcpy(&gen, msg.bytes.data(), 4);

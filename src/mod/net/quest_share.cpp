@@ -137,7 +137,8 @@ std::vector<proto::QuestAcceptMsg> quest_share_tick(bool linked, bool host, bool
     std::vector<proto::QuestAcceptMsg> out;
     if (!g_cfg.enabled) return out;
     const bool loading = sniffer_world_loading();
-    if (loading && !g_was_loading) g_queue.clear();  // runtime ids change in the next world
+    // A loading screen keeps the queue: it names NPCs by static key and looks the runtime id up
+    // each time (clearing it lost the host's accepts: found by the fuzzer, tests/fuzz).
     g_was_loading = loading;
     const uint64_t now = GetTickCount64();
     if (in_world && !loading) {
@@ -162,7 +163,7 @@ std::vector<proto::QuestAcceptMsg> quest_share_tick(bool linked, bool host, bool
                     break;
             }
         }
-        if (auto a = g_detector.tick(now32())) {
+        while (auto a = g_detector.tick(now32())) {
             log::info("Quest share: we accepted a quest from NPC 0x{:X} ({} mission rows); sending it", a->npc_key,
                       a->steps.size());
             out.push_back(std::move(*a));
