@@ -48,12 +48,29 @@ bool Endpoint::is_loopback() const {
     return (ntohl(ip) >> 24) == 127;
 }
 
+bool Endpoint::is_tailnet() const {
+    return (ntohl(ip) & 0xFFC00000u) == 0x64400000u;
+}
+
 std::string Endpoint::str() const {
     char buf[INET_ADDRSTRLEN] = {};
     in_addr addr{};
     addr.s_addr = ip;
     inet_ntop(AF_INET, &addr, buf, sizeof buf);
     return std::string(buf) + ":" + std::to_string(port);
+}
+
+std::optional<uint32_t> local_ip_toward(const Endpoint& to) {
+    SOCKET s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (s == INVALID_SOCKET) return std::nullopt;
+    const sockaddr_in dst = to_sockaddr(to);
+    sockaddr_in sa{};
+    int len = sizeof sa;
+    const bool ok = connect(s, reinterpret_cast<const sockaddr*>(&dst), sizeof dst) == 0 &&
+                    getsockname(s, reinterpret_cast<sockaddr*>(&sa), &len) == 0;
+    closesocket(s);
+    if (!ok || sa.sin_addr.s_addr == 0) return std::nullopt;
+    return sa.sin_addr.s_addr;
 }
 
 bool startup() {
@@ -73,6 +90,10 @@ void cleanup() {
 UdpSocket::~UdpSocket() { close(); }
 
 bool UdpSocket::open(uint16_t port, bool loopback_only) {
+    return open_at(port, htonl(loopback_only ? INADDR_LOOPBACK : INADDR_ANY));
+}
+
+bool UdpSocket::open_at(uint16_t port, uint32_t bind_ip) {
     close();
     SOCKET s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (s == INVALID_SOCKET) return false;
@@ -87,7 +108,7 @@ bool UdpSocket::open(uint16_t port, bool loopback_only) {
 
     sockaddr_in sa{};
     sa.sin_family = AF_INET;
-    sa.sin_addr.s_addr = htonl(loopback_only ? INADDR_LOOPBACK : INADDR_ANY);
+    sa.sin_addr.s_addr = bind_ip;
     sa.sin_port = htons(port);
     if (bind(s, reinterpret_cast<sockaddr*>(&sa), sizeof sa) == SOCKET_ERROR) {
         closesocket(s);

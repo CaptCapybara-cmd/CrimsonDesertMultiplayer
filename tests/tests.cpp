@@ -29,6 +29,8 @@
 #include "common/pattern.h"
 #include "common/protocol.h"
 #include "common/reliable.h"
+#include "common/transport.h"
+#include "common/udp.h"
 
 using namespace cdmp;
 
@@ -565,6 +567,33 @@ void test_reliable_order_and_streams() {
 
 // A peer with another protocol version is recognised by its Hello/Welcome
 // and reported; nothing else of it decodes, and we never connect.
+void test_tailnet_udp() {
+    CHECK(net::startup());
+    auto at = [](const char* ip) { return net::Endpoint::resolve(ip, 1)->is_tailnet(); };
+    CHECK(at("100.64.0.0") && at("100.64.0.1") && at("100.100.100.100") && at("100.127.255.255"));
+    CHECK(!at("100.63.255.255") && !at("100.128.0.0") && !at("127.0.0.1") && !at("192.168.1.10") && !at("10.0.0.1"));
+    // The filter: bound to loopback for the test, a sender outside the tailnet range is dropped.
+    net::UdpTransport t;
+    CHECK(t.open_tailnet(0, net::Endpoint::loopback(0).ip));
+    net::UdpSocket other;
+    CHECK(other.open(0, true));
+    const uint8_t hi[] = {1, 2, 3};
+    const auto port = static_cast<uint16_t>(std::stoi(t.status().substr(t.status().find(':') + 1)));
+    CHECK(other.send_to(net::Endpoint::loopback(port), hi));
+    net::PeerAddr from;
+    uint8_t buf[16];
+    CHECK(!t.recv(from, buf, 500));
+    CHECK(!from.valid());
+    CHECK(t.status().find("1 outside datagrams dropped") != std::string::npos);
+    // Without the tailnet mode the same datagram is delivered.
+    net::UdpTransport plain;
+    CHECK(plain.open(0, true));
+    const auto plain_port = static_cast<uint16_t>(std::stoi(plain.status().substr(9)));
+    CHECK(other.send_to(net::Endpoint::loopback(plain_port), hi));
+    CHECK(plain.recv(from, buf, 500) == 3u);
+    net::cleanup();
+}
+
 void test_versions() {
     auto old = proto::encode(make(proto::Hello{"Friend", 3, 77}));
     old[4] = 5;  // version field (u16 at +4)
@@ -1773,6 +1802,7 @@ int main() {
     test_reliable_order_and_streams();
     test_reliable_budget();
     test_versions();
+    test_tailnet_udp();
     test_session_game_data();
     test_clock_mapper();
     test_equip_state();

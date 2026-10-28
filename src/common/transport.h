@@ -1,6 +1,6 @@
 #pragma once
 // Datagram transport behind the session: plain UDP (development on one PC,
-// or a friend over a VPN / open port) or Steam networking (no port
+// or, for testing only, two PCs on one Tailscale tailnet: [dev] udp_tailnet) or Steam networking (no port
 // forwarding; src/mod/net/steam_transport.h). Datagrams are at most
 // proto::kMaxPacketSize bytes, unreliable and unordered on both.
 
@@ -58,16 +58,32 @@ public:
         loopback_only_ = loopback_only;
         return true;
     }
+    // Tailnet test mode: bound to this PC's Tailscale address, and datagrams from
+    // outside 100.64.0.0/10 are dropped (a host locks onto whoever speaks first).
+    bool open_tailnet(uint16_t port, uint32_t tailnet_ip) {
+        if (!sock_.open_at(port, tailnet_ip)) return false;
+        loopback_only_ = false;
+        tailnet_ip_ = tailnet_ip;
+        return true;
+    }
     bool send(const PeerAddr& to, std::span<const uint8_t> data) override {
         return to.kind == PeerAddr::Kind::Udp && sock_.send_to(to.endpoint(), data);
     }
     std::optional<size_t> recv(PeerAddr& from, std::span<uint8_t> buf, int timeout_ms) override {
         Endpoint ep;
         auto n = sock_.recv_from(ep, buf, timeout_ms);
+        if (n && tailnet_ip_ && !ep.is_tailnet()) {
+            ++dropped_;
+            return std::nullopt;
+        }
         if (n) from = PeerAddr::udp(ep);
         return n;
     }
     std::string status() const override {
+        if (tailnet_ip_) {
+            return "udp " + Endpoint{tailnet_ip_, sock_.local_port()}.str() + " (tailnet only, " +
+                   std::to_string(dropped_) + " outside datagrams dropped)";
+        }
         return "udp port " + std::to_string(sock_.local_port()) +
                (loopback_only_ ? " (loopback only)" : " (all interfaces)");
     }
@@ -75,6 +91,8 @@ public:
 private:
     UdpSocket sock_;
     bool loopback_only_ = true;
+    uint32_t tailnet_ip_ = 0;  // network order; 0 = not in tailnet mode
+    uint64_t dropped_ = 0;
 };
 
 }  // namespace cdmp::net

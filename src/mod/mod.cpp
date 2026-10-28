@@ -220,9 +220,32 @@ void run_network(const Config& cfg, LocalSource& local) {
         // UDP is only for tests on one PC (cdmp_peer, cdmp_host): it never
         // leaves this computer. Between players only Steam is used: it hides
         // the IPs, encrypts, and the host accepts only friends.
+        // The one exception, for tests only ([dev] udp_tailnet=1): two PCs on one
+        // Tailscale tailnet, which keeps the addresses private and encrypts. Bound
+        // to this PC's Tailscale address, talking only to 100.64.0.0/10.
         auto udp = std::make_unique<net::UdpTransport>();
         bool ok = false;
-        if (host) {
+        if (cfg.dev_udp_tailnet) {
+            std::optional<net::Endpoint> ep;
+            if (!host) {
+                ep = net::Endpoint::resolve(cfg.peer_host, cfg.peer_port);
+                if (!ep || !ep->is_tailnet()) {
+                    log::error("udp_tailnet: peer_host '{}' is not a Tailscale address (100.64.0.0/10)", cfg.peer_host);
+                    net::cleanup();
+                    return;
+                }
+            }
+            // A host has no peer yet: Tailscale's own service address picks the route.
+            const auto toward = ep ? ep : net::Endpoint::resolve("100.100.100.100", 53);
+            const auto local_ip = toward ? net::local_ip_toward(*toward) : std::nullopt;
+            if (!local_ip || !net::Endpoint{*local_ip, 0}.is_tailnet()) {
+                log::error("udp_tailnet: this PC has no Tailscale address (is Tailscale connected?)");
+                net::cleanup();
+                return;
+            }
+            if (ep) peer = net::PeerAddr::udp(*ep);
+            ok = udp->open_tailnet(host ? cfg.peer_port : 0, *local_ip);
+        } else if (host) {
             ok = udp->open(cfg.peer_port, /*loopback_only=*/true);
         } else if (auto ep = net::Endpoint::resolve(cfg.peer_host, cfg.peer_port)) {
             if (!ep->is_loopback()) {
